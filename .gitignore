@@ -1,0 +1,27 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Android
+android/app/build/
+android/.gradle/
+android/local.properties
+android/app/debug.keystore
+*.keystore
+
+# React Native
+.metro/
+.expo/
+
+# Environment
+.env
+.env.*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
