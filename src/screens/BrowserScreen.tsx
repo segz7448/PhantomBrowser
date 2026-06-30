@@ -5,21 +5,24 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   StatusBar,
   BackHandler,
   Share,
-  Modal,
 } from 'react-native';
 import {WebView, WebViewNavigation} from 'react-native-webview';
 import {useFocusEffect} from '@react-navigation/native';
 import {useProxy} from '../services/ProxyContext';
 import {useAppSettings} from '../services/AppSettings';
+import {useTheme, elevation} from '../services/Theme';
 import AdBlocker from '../services/AdBlocker';
 import Library from '../services/Library';
+import haptics from '../services/haptics';
 import TabSwitcher, {TabSummary} from '../components/TabSwitcher';
 import LibraryModal from '../components/LibraryModal';
 import FindBar from '../components/FindBar';
+import ProgressBar from '../components/ProgressBar';
+import Favicon from '../components/Favicon';
+import BottomSheet from '../components/BottomSheet';
 
 const ADBLOCKER_JS = AdBlocker.getInjectionScript();
 
@@ -61,6 +64,8 @@ function getDomain(url: string): string {
 export default function BrowserScreen() {
   const {isConnected, chain} = useProxy();
   const settings = useAppSettings();
+  const theme = useTheme();
+  const styles = useMemo(() => makeStyles(theme), [theme]);
 
   const [tabs, setTabs] = useState<TabState[]>(() => [newTab()]);
   const [activeId, setActiveId] = useState(() => tabs[0].id);
@@ -137,6 +142,7 @@ export default function BrowserScreen() {
   );
 
   const openNewTab = useCallback(() => {
+    haptics.light();
     const t = newTab();
     setTabs(prev => [...prev, t]);
     setActiveId(t.id);
@@ -165,12 +171,14 @@ export default function BrowserScreen() {
   );
 
   const selectTab = useCallback((id: string) => {
+    haptics.light();
     setActiveId(id);
     setTabSwitcherVisible(false);
   }, []);
 
   const toggleDesktopSite = useCallback(() => {
     if (!activeTab) return;
+    haptics.light();
     updateTab(activeTab.id, {desktopSite: !activeTab.desktopSite});
     setMenuVisible(false);
     setTimeout(() => webviewRefs.current[activeTab.id]?.reload(), 50);
@@ -179,6 +187,7 @@ export default function BrowserScreen() {
   const toggleBookmark = useCallback(async () => {
     if (!activeTab) return;
     const isNowBookmarked = await Library.toggleBookmark(activeTab.url, activeTab.title || activeTab.url);
+    haptics.success();
     setBookmarked(isNowBookmarked);
     setMenuVisible(false);
   }, [activeTab]);
@@ -224,11 +233,11 @@ export default function BrowserScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0d0d0d" />
+      <StatusBar barStyle={theme.statusBarStyle} backgroundColor={theme.background} />
 
       {/* Status / unprotected warning */}
       <View style={styles.statusBar}>
-        <View style={[styles.dot, {backgroundColor: isConnected ? '#22c55e' : '#ef4444'}]} />
+        <View style={[styles.dot, {backgroundColor: isConnected ? theme.success : theme.danger}]} />
         <Text style={styles.statusText} numberOfLines={1}>
           {isConnected
             ? `Protected · ${chain?.exitIP ?? '...'}`
@@ -236,8 +245,8 @@ export default function BrowserScreen() {
             ? 'No proxy — browsing locked'
             : 'No proxy — browsing unprotected'}
         </Text>
-        {loading && <ActivityIndicator size="small" color="#7c3aed" style={{marginLeft: 8}} />}
       </View>
+      <ProgressBar loading={loading} />
 
       {showUnprotectedWarning && (
         <View style={styles.warningBanner}>
@@ -251,7 +260,7 @@ export default function BrowserScreen() {
       )}
 
       {/* URL bar */}
-      <View style={styles.urlBar}>
+      <View style={styles.urlBarOuter}>
         <TouchableOpacity
           onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goBack()}
           disabled={!activeTab?.canGoBack}>
@@ -264,27 +273,31 @@ export default function BrowserScreen() {
         </TouchableOpacity>
 
         {editingUrl ? (
-          <TextInput
-            style={styles.urlInput}
-            placeholder={activeTab?.url}
-            placeholderTextColor="#666"
-            value={inputUrl}
-            onChangeText={setInputUrl}
-            onSubmitEditing={() => navigate(inputUrlRef.current)}
-            onBlur={() => setEditingUrl(false)}
-            returnKeyType="go"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            autoFocus
-          />
+          <View style={styles.pillInput}>
+            <TextInput
+              style={styles.urlInput}
+              placeholder={activeTab?.url}
+              placeholderTextColor={theme.textMuted}
+              value={inputUrl}
+              onChangeText={setInputUrl}
+              onSubmitEditing={() => navigate(inputUrlRef.current)}
+              onBlur={() => setEditingUrl(false)}
+              returnKeyType="go"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              autoFocus
+            />
+          </View>
         ) : (
           <TouchableOpacity
             style={styles.urlDisplay}
+            activeOpacity={0.8}
             onPress={() => {
               setInputUrl(activeTab?.url ?? '');
               setEditingUrl(true);
             }}>
+            <Favicon url={activeTab?.url ?? ''} size={15} rounded={4} />
             {isConnected && <Text style={styles.lockIcon}>🔒</Text>}
             <Text style={styles.urlDisplayText} numberOfLines={1}>
               {getDomain(activeTab?.url ?? '')}
@@ -384,130 +397,124 @@ export default function BrowserScreen() {
         onOpenUrl={url => updateTab(activeId, {url})}
       />
 
-      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
-        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
-          <View style={styles.menuSheet}>
-            <TouchableOpacity style={styles.menuItem} onPress={toggleBookmark}>
-              <Text style={styles.menuItemText}>{bookmarked ? '★ Remove Bookmark' : '☆ Add Bookmark'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={toggleDesktopSite}>
-              <Text style={styles.menuItemText}>
-                {activeTab?.desktopSite ? '📱 Switch to Mobile Site' : '🖥️ Request Desktop Site'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => {
-                setFindVisible(true);
-                setMenuVisible(false);
-              }}>
-              <Text style={styles.menuItemText}>🔍 Find in Page</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={shareUrl}>
-              <Text style={styles.menuItemText}>↗ Share Page</Text>
-            </TouchableOpacity>
-          </View>
+      <BottomSheet visible={menuVisible} onDismiss={() => setMenuVisible(false)}>
+        <TouchableOpacity style={styles.menuItem} onPress={toggleBookmark}>
+          <Text style={styles.menuItemText}>{bookmarked ? '★ Remove Bookmark' : '☆ Add Bookmark'}</Text>
         </TouchableOpacity>
-      </Modal>
+        <TouchableOpacity style={styles.menuItem} onPress={toggleDesktopSite}>
+          <Text style={styles.menuItemText}>
+            {activeTab?.desktopSite ? '📱 Switch to Mobile Site' : '🖥️ Request Desktop Site'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.menuItem}
+          onPress={() => {
+            setFindVisible(true);
+            setMenuVisible(false);
+          }}>
+          <Text style={styles.menuItemText}>🔍 Find in Page</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.menuItem} onPress={shareUrl}>
+          <Text style={styles.menuItemText}>↗ Share Page</Text>
+        </TouchableOpacity>
+      </BottomSheet>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: '#0d0d0d'},
-  statusBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: '#111',
-  },
-  dot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
-  statusText: {color: '#aaa', fontSize: 11, flex: 1},
-  warningBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#3a1d00',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#5a2d00',
-  },
-  warningText: {color: '#fbbf24', fontSize: 11, flex: 1},
-  warningDismiss: {color: '#fbbf24', fontSize: 14, paddingHorizontal: 8, fontWeight: '700'},
-  urlBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1a1a1a',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#222',
-  },
-  urlInput: {
-    flex: 1,
-    backgroundColor: '#222',
-    color: '#fff',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    fontSize: 13,
-    marginHorizontal: 4,
-  },
-  urlDisplay: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#222',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginHorizontal: 4,
-  },
-  lockIcon: {fontSize: 11, marginRight: 6},
-  urlDisplayText: {color: '#ddd', fontSize: 13, flex: 1},
-  navBtn: {color: '#aaa', fontSize: 22, paddingHorizontal: 6},
-  navBtnDisabled: {color: '#333'},
-  webviewArea: {flex: 1},
-  webview: {flex: 1},
-  noProxy: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 32,
-  },
-  noProxyIcon: {fontSize: 56, marginBottom: 16},
-  noProxyTitle: {color: '#fff', fontSize: 20, fontWeight: '700', marginBottom: 12},
-  noProxyText: {color: '#888', fontSize: 14, textAlign: 'center', lineHeight: 22},
-  bottomBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    backgroundColor: '#111',
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#222',
-  },
-  bottomBtn: {paddingHorizontal: 18, paddingVertical: 4, alignItems: 'center', justifyContent: 'center'},
-  bottomIcon: {color: '#ccc', fontSize: 20},
-  tabCountBadge: {
-    width: 26,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: '#ccc',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabCountText: {color: '#ccc', fontSize: 11, fontWeight: '700'},
-  menuOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end'},
-  menuSheet: {
-    backgroundColor: '#1a1a1a',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingVertical: 8,
-    paddingBottom: 24,
-  },
-  menuItem: {paddingVertical: 14, paddingHorizontal: 20},
-  menuItemText: {color: '#fff', fontSize: 15},
-});
+const makeStyles = (theme: ReturnType<typeof useTheme>) =>
+  StyleSheet.create({
+    container: {flex: 1, backgroundColor: theme.background},
+    statusBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      backgroundColor: theme.surface,
+    },
+    dot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
+    statusText: {color: theme.textSecondary, fontSize: 11, flex: 1},
+    warningBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.warningSoft,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+    },
+    warningText: {color: theme.warning, fontSize: 11, flex: 1},
+    warningDismiss: {color: theme.warning, fontSize: 14, paddingHorizontal: 8, fontWeight: '700'},
+    urlBarOuter: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.surfaceElevated,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+    },
+    pillInput: {flex: 1, marginHorizontal: 6},
+    urlInput: {
+      backgroundColor: theme.surface,
+      color: theme.text,
+      borderRadius: 24,
+      paddingHorizontal: 16,
+      paddingVertical: 9,
+      fontSize: 13,
+      borderWidth: 1.5,
+      borderColor: theme.primary,
+    },
+    urlDisplay: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.surface,
+      borderRadius: 24,
+      paddingHorizontal: 14,
+      paddingVertical: 9,
+      marginHorizontal: 6,
+      gap: 6,
+      borderWidth: 1,
+      borderColor: theme.border,
+      ...elevation(theme, 1),
+    },
+    lockIcon: {fontSize: 11},
+    urlDisplayText: {color: theme.textSecondary, fontSize: 13, flex: 1},
+    navBtn: {color: theme.textSecondary, fontSize: 22, paddingHorizontal: 6},
+    navBtnDisabled: {color: theme.textMuted, opacity: 0.4},
+    webviewArea: {flex: 1},
+    webview: {flex: 1},
+    noProxy: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 32,
+    },
+    noProxyIcon: {fontSize: 56, marginBottom: 16},
+    noProxyTitle: {color: theme.text, fontSize: 20, fontWeight: '700', marginBottom: 12},
+    noProxyText: {color: theme.textMuted, fontSize: 14, textAlign: 'center', lineHeight: 22},
+    bottomBar: {
+      flexDirection: 'row',
+      justifyContent: 'space-around',
+      alignItems: 'center',
+      backgroundColor: theme.surface,
+      paddingVertical: 10,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+    },
+    bottomBtn: {paddingHorizontal: 18, paddingVertical: 4, alignItems: 'center', justifyContent: 'center'},
+    bottomIcon: {color: theme.textSecondary, fontSize: 20},
+    tabCountBadge: {
+      width: 26,
+      height: 22,
+      borderRadius: 6,
+      borderWidth: 1.5,
+      borderColor: theme.textSecondary,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    tabCountText: {color: theme.textSecondary, fontSize: 11, fontWeight: '700'},
+    menuItem: {paddingVertical: 14, paddingHorizontal: 20},
+    menuItemText: {color: theme.text, fontSize: 15},
+  });

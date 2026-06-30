@@ -11,6 +11,7 @@ export interface AppSettingsState {
   // When false, the user can browse unprotected (with a warning banner shown).
   requireProxy: boolean;
   desktopSiteDefault: boolean;
+  theme: 'dark' | 'light';
 }
 
 const DEFAULTS: AppSettingsState = {
@@ -21,6 +22,7 @@ const DEFAULTS: AppSettingsState = {
   quicDisabled: true,
   requireProxy: true,
   desktopSiteDefault: false,
+  theme: 'dark',
 };
 
 const STORAGE_KEY = 'phantom_app_settings';
