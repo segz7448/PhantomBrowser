@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {NativeModules, PermissionsAndroid} from 'react-native';
+import {useFocusEffect} from '@react-navigation/native';
 
 const {DownloadModule} = NativeModules;
 
@@ -32,6 +33,12 @@ export default function DownloadsScreen() {
   useEffect(() => {
     loadDownloads();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadDownloads();
+    }, []),
+  );
 
   const loadDownloads = async () => {
     try {

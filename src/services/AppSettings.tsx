@@ -11,8 +11,15 @@ export interface AppSettingsState {
   // When false, the user can browse unprotected (with a warning banner shown).
   requireProxy: boolean;
   desktopSiteDefault: boolean;
-  theme: 'dark' | 'light';
+  searchEngine: 'duckduckgo' | 'google' | 'brave' | 'startpage';
 }
+
+export const SEARCH_ENGINE_URLS: Record<AppSettingsState['searchEngine'], string> = {
+  duckduckgo: 'https://duckduckgo.com/?q=',
+  google: 'https://www.google.com/search?q=',
+  brave: 'https://search.brave.com/search?q=',
+  startpage: 'https://www.startpage.com/sp/search?query=',
+};
 
 const DEFAULTS: AppSettingsState = {
   adBlock: true,
@@ -22,7 +29,7 @@ const DEFAULTS: AppSettingsState = {
   quicDisabled: true,
   requireProxy: true,
   desktopSiteDefault: false,
-  theme: 'dark',
+  searchEngine: 'duckduckgo',
 };
 
 const STORAGE_KEY = 'phantom_app_settings';
