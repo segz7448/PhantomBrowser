@@ -12,6 +12,7 @@ import PasswordScreen from './screens/PasswordScreen';
 import DownloadsScreen from './screens/DownloadsScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import {ProxyProvider} from './services/ProxyContext';
+import {AppSettingsProvider} from './services/AppSettings';
 
 const Tab = createBottomTabNavigator();
 
@@ -19,6 +20,7 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{flex: 1}}>
       <SafeAreaProvider>
+        <AppSettingsProvider>
         <ProxyProvider>
           <NavigationContainer>
             <Tab.Navigator
@@ -60,6 +62,7 @@ export default function App() {
           </NavigationContainer>
           <Toast />
         </ProxyProvider>
+        </AppSettingsProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

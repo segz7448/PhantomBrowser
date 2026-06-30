@@ -1,17 +1,14 @@
-import React, {useState} from 'react';
+import React from 'react';
 import {View, Text, Switch, TouchableOpacity, StyleSheet, ScrollView, Alert} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import EncryptedStorage from 'react-native-encrypted-storage';
 import Toast from 'react-native-toast-message';
 import {useProxy} from '../services/ProxyContext';
+import {useAppSettings} from '../services/AppSettings';
 
 export default function SettingsScreen() {
   const {disconnect} = useProxy();
-  const [adBlock, setAdBlock] = useState(true);
-  const [webrtcBlock, setWebrtcBlock] = useState(true);
-  const [dnsOverProxy, setDnsOverProxy] = useState(true);
-  const [incognito, setIncognito] = useState(true);
-  const [quicDisabled, setQuicDisabled] = useState(true);
+  const settings = useAppSettings();
 
   const clearData = () => {
     Alert.alert('Clear All Data', 'This will delete all passwords, downloads, and proxy config.', [
@@ -23,9 +20,6 @@ export default function SettingsScreen() {
           try {
             await disconnect();
             await AsyncStorage.clear();
-            // FIX: EncryptedStorage.clear() does not exist in react-native-encrypted-storage.
-            // The correct method is removeItem per key, or we use a known key to clear vault data.
-            // We clear the known password storage key explicitly.
             await EncryptedStorage.removeItem('phantom_passwords');
             Toast.show({type: 'success', text1: 'All data cleared'});
           } catch (e: any) {
@@ -40,12 +34,51 @@ export default function SettingsScreen() {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>Settings</Text>
 
+      <SectionHeader title="Browsing" />
+      <SettingRow
+        label="Require Proxy"
+        sub="Block browsing until a proxy is connected"
+        value={settings.requireProxy}
+        onChange={v => settings.update('requireProxy', v)}
+      />
+      <SettingRow
+        label="Desktop Site by Default"
+        sub="Request desktop pages on new tabs"
+        value={settings.desktopSiteDefault}
+        onChange={v => settings.update('desktopSiteDefault', v)}
+      />
+
       <SectionHeader title="Privacy & Security" />
-      <SettingRow label="Ad Blocker" sub="Block ads and trackers" value={adBlock} onChange={setAdBlock} />
-      <SettingRow label="Block WebRTC" sub="Prevent IP leak via WebRTC" value={webrtcBlock} onChange={setWebrtcBlock} />
-      <SettingRow label="DNS over Proxy" sub="SOCKS5H — no local DNS leak" value={dnsOverProxy} onChange={setDnsOverProxy} />
-      <SettingRow label="Disable QUIC" sub="Force TCP, no protocol bypass" value={quicDisabled} onChange={setQuicDisabled} />
-      <SettingRow label="Incognito Mode" sub="No history or cookies saved" value={incognito} onChange={setIncognito} />
+      <SettingRow
+        label="Ad Blocker"
+        sub="Block ads and trackers"
+        value={settings.adBlock}
+        onChange={v => settings.update('adBlock', v)}
+      />
+      <SettingRow
+        label="Block WebRTC"
+        sub="Prevent IP leak via WebRTC"
+        value={settings.webrtcBlock}
+        onChange={v => settings.update('webrtcBlock', v)}
+      />
+      <SettingRow
+        label="DNS over Proxy"
+        sub="SOCKS5H — no local DNS leak"
+        value={settings.dnsOverProxy}
+        onChange={v => settings.update('dnsOverProxy', v)}
+      />
+      <SettingRow
+        label="Disable QUIC"
+        sub="Force TCP, no protocol bypass"
+        value={settings.quicDisabled}
+        onChange={v => settings.update('quicDisabled', v)}
+      />
+      <SettingRow
+        label="Incognito Mode"
+        sub="No history or cookies saved by the WebView"
+        value={settings.incognito}
+        onChange={v => settings.update('incognito', v)}
+      />
 
       <SectionHeader title="About" />
       <InfoRow label="App" value="Phantom Browser v1.0.0" />
