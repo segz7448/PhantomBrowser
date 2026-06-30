@@ -70,7 +70,7 @@ jobs:
         run: |
           cd android
           ./gradlew assembleRelease \
-            -PPHANTOM_STORE_FILE=app/debug.keystore \
+            -PPHANTOM_STORE_FILE=debug.keystore \
             -PPHANTOM_STORE_PASSWORD=android \
             -PPHANTOM_KEY_ALIAS=androiddebugkey \
             -PPHANTOM_KEY_PASSWORD=android \
