@@ -25,3 +25,4 @@ android/app/debug.keystore
 # OS
 .DS_Store
 Thumbs.db
+src/config/crashReportingConfig.ts
