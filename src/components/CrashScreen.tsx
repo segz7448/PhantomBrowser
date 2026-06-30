@@ -6,9 +6,17 @@ interface Props {
   stack?: string;
   extra?: string;
   onContinue?: () => void;
+  reportStatus?: 'sending' | 'sent' | 'skipped' | 'failed';
 }
 
-export default function CrashScreen({message, stack, extra, onContinue}: Props) {
+export default function CrashScreen({message, stack, extra, onContinue, reportStatus}: Props) {
+  const statusText = {
+    sending: '⏳ Sending report to GitHub…',
+    sent: '✅ Reported to GitHub automatically',
+    skipped: 'ℹ️ Not auto-reported (duplicate or recently sent)',
+    failed: '⚠️ Auto-report failed — screenshot this and send manually',
+  }[reportStatus || 'skipped'];
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll}>
@@ -16,6 +24,7 @@ export default function CrashScreen({message, stack, extra, onContinue}: Props) 
         <Text style={styles.subtitle}>
           Screenshot this whole screen and send it over — this is the real error that was closing the app.
         </Text>
+        {reportStatus && <Text style={styles.status}>{statusText}</Text>}
 
         <Text style={styles.label}>Message</Text>
         <Text selectable style={styles.code}>
@@ -54,6 +63,7 @@ const styles = StyleSheet.create({
   scroll: {padding: 16, paddingBottom: 24},
   title: {color: '#ef4444', fontSize: 18, fontWeight: '700', marginBottom: 8},
   subtitle: {color: '#aaa', fontSize: 12, marginBottom: 16, lineHeight: 18},
+  status: {color: '#9ca3af', fontSize: 11, marginBottom: 12, fontWeight: '600'},
   label: {color: '#7c3aed', fontSize: 11, fontWeight: '700', marginTop: 16, marginBottom: 4, textTransform: 'uppercase'},
   code: {color: '#e5e5e5', fontSize: 11, fontFamily: 'monospace'},
   button: {backgroundColor: '#7c3aed', padding: 14, alignItems: 'center', margin: 16, borderRadius: 10},

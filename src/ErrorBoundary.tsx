@@ -1,9 +1,11 @@
 import React from 'react';
 import CrashScreen from './components/CrashScreen';
+import {reportCrash, ReportStatus} from './services/crashReporter';
 
 interface State {
   error: Error | null;
   info: string;
+  reportStatus?: ReportStatus | 'sending';
 }
 
 // Catches errors thrown during React render (not async/event-handler errors —
@@ -16,14 +18,28 @@ export default class ErrorBoundary extends React.Component<{children: React.Reac
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    this.setState({info: info.componentStack || ''});
+    this.setState({info: info.componentStack || '', reportStatus: 'sending'});
+    reportCrash({
+      message: error.message,
+      stack: error.stack,
+      componentStack: info.componentStack || undefined,
+      isFatal: true,
+    }).then(status => this.setState({reportStatus: status}));
   }
 
-  reset = () => this.setState({error: null, info: ''});
+  reset = () => this.setState({error: null, info: '', reportStatus: undefined});
 
   render() {
-    const {error, info} = this.state;
+    const {error, info, reportStatus} = this.state;
     if (!error) return this.props.children;
-    return <CrashScreen message={error.message} stack={error.stack} extra={info} onContinue={this.reset} />;
+    return (
+      <CrashScreen
+        message={error.message}
+        stack={error.stack}
+        extra={info}
+        onContinue={this.reset}
+        reportStatus={reportStatus}
+      />
+    );
   }
 }
