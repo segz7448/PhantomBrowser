@@ -13,6 +13,11 @@ import SettingsScreen from './screens/SettingsScreen';
 import {ProxyProvider} from './services/ProxyContext';
 import {AppSettingsProvider} from './services/AppSettings';
 import {useTheme} from './services/Theme';
+import {installGlobalErrorHandler} from './services/crashCapture';
+import GlobalCrashOverlay from './GlobalCrashOverlay';
+import ErrorBoundary from './ErrorBoundary';
+
+installGlobalErrorHandler();
 
 const Tab = createBottomTabNavigator();
 
@@ -54,15 +59,19 @@ function AppNavigator() {
 
 export default function App() {
   return (
-    <GestureHandlerRootView style={{flex: 1}}>
-      <SafeAreaProvider>
-        <AppSettingsProvider>
-          <ProxyProvider>
-            <AppNavigator />
-            <Toast />
-          </ProxyProvider>
-        </AppSettingsProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <ErrorBoundary>
+      <GlobalCrashOverlay>
+        <GestureHandlerRootView style={{flex: 1}}>
+          <SafeAreaProvider>
+            <AppSettingsProvider>
+              <ProxyProvider>
+                <AppNavigator />
+                <Toast />
+              </ProxyProvider>
+            </AppSettingsProvider>
+          </SafeAreaProvider>
+        </GestureHandlerRootView>
+      </GlobalCrashOverlay>
+    </ErrorBoundary>
   );
 }
