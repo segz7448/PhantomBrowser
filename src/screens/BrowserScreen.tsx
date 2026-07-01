@@ -5,7 +5,6 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   StatusBar,
   BackHandler,
   Share,
@@ -14,6 +13,8 @@ import {
   PanResponder,
   NativeModules,
   NativeEventEmitter,
+  Dimensions,
+  ScrollView,
 } from 'react-native';
 import {WebView, WebViewNavigation} from 'react-native-webview';
 import {useFocusEffect} from '@react-navigation/native';
@@ -30,8 +31,6 @@ import FindBar from '../components/FindBar';
 import SiteInfoPanel from '../components/SiteInfoPanel';
 import AddressAutocomplete from '../components/AddressAutocomplete';
 import PasswordAutofillBanner from '../components/PasswordAutofillBanner';
-import {ChevronIcon, PlusIcon, DotsIcon, ReloadIcon, LockIcon} from '../components/Icon';
-import theme from '../theme';
 
 const {DownloadModule} = NativeModules;
 const downloadEmitter = DownloadModule ? new NativeEventEmitter(DownloadModule) : null;
@@ -41,10 +40,29 @@ const TABS_STORAGE_KEY = 'phantom_tabs_v1';
 const DOWNLOADS_KEY = 'phantom_downloads';
 const PASSWORDS_KEY = 'phantom_passwords';
 
+// Chrome-matching user agents
 const DESKTOP_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const MOBILE_UA =
-  'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+  'Mozilla/5.0 (Linux; Android 13; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
+
+// Forces desktop viewport: overrides meta viewport so the site renders
+// as if it's running on a 1280px-wide desktop screen.
+const DESKTOP_VIEWPORT_JS = `
+(function() {
+  var meta = document.querySelector('meta[name="viewport"]');
+  if (!meta) { meta = document.createElement('meta'); meta.name = 'viewport'; document.head.appendChild(meta); }
+  meta.content = 'width=1280, initial-scale=0.5, user-scalable=yes';
+})(); true;
+`;
+
+// Restores normal mobile viewport
+const MOBILE_VIEWPORT_JS = `
+(function() {
+  var meta = document.querySelector('meta[name="viewport"]');
+  if (meta) meta.content = 'width=device-width, initial-scale=1, user-scalable=yes';
+})(); true;
+`;
 
 interface TabState {
   id: string;
@@ -53,6 +71,7 @@ interface TabState {
   canGoBack: boolean;
   canGoForward: boolean;
   desktopSite: boolean;
+  zoom: number; // 20–200, default 100
 }
 
 interface PasswordEntry {
@@ -72,24 +91,137 @@ function newTab(url = 'https://duckduckgo.com'): TabState {
     canGoBack: false,
     canGoForward: false,
     desktopSite: false,
+    zoom: 100,
   };
 }
 
 function getOrigin(url: string): string {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return url;
-  }
+  try { return new URL(url).origin; } catch { return url; }
+}
+function getDomain(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+function isHttps(url: string): boolean {
+  return url.startsWith('https://');
 }
 
-function getDomain(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '');
-  } catch {
-    return url;
-  }
+// ─── Icons (inline SVG-style views, no icon font dependency) ──────────────────
+
+function BackIcon({color}: {color: string}) {
+  return (
+    <View style={{width: 20, height: 20, alignItems: 'center', justifyContent: 'center'}}>
+      <View style={{width: 8, height: 8, borderLeftWidth: 2, borderBottomWidth: 2, borderColor: color, transform: [{rotate: '45deg'}]}} />
+    </View>
+  );
 }
+function ForwardIcon({color}: {color: string}) {
+  return (
+    <View style={{width: 20, height: 20, alignItems: 'center', justifyContent: 'center'}}>
+      <View style={{width: 8, height: 8, borderRightWidth: 2, borderBottomWidth: 2, borderColor: color, transform: [{rotate: '-45deg'}]}} />
+    </View>
+  );
+}
+function TabsIcon({count, color}: {count: number; color: string}) {
+  return (
+    <View style={{width: 24, height: 24, borderRadius: 5, borderWidth: 1.5, borderColor: color, alignItems: 'center', justifyContent: 'center'}}>
+      <Text style={{color, fontSize: count > 9 ? 9 : 11, fontWeight: '700'}}>{count > 99 ? '99' : count}</Text>
+    </View>
+  );
+}
+function MenuIcon({color}: {color: string}) {
+  return (
+    <View style={{gap: 4, alignItems: 'center', justifyContent: 'center', padding: 2}}>
+      {[0,1,2].map(i => <View key={i} style={{width: 18, height: 2, backgroundColor: color, borderRadius: 1}} />)}
+    </View>
+  );
+}
+function ReloadIcon({color}: {color: string}) {
+  return (
+    <View style={{width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: color, borderRightColor: 'transparent', transform: [{rotate: '45deg'}]}} />
+  );
+}
+function LockIcon({secure}: {secure: boolean}) {
+  return (
+    <View style={{alignItems: 'center', marginRight: 4}}>
+      <View style={{
+        width: 9, height: 7,
+        borderWidth: 1.5,
+        borderColor: secure ? '#22c55e' : '#9ca3af',
+        borderBottomWidth: 0,
+        borderTopLeftRadius: 5,
+        borderTopRightRadius: 5,
+      }} />
+      <View style={{
+        width: 13, height: 8,
+        backgroundColor: secure ? '#22c55e' : '#9ca3af',
+        borderRadius: 2,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}>
+        <View style={{width: 2, height: 3, backgroundColor: '#fff', borderRadius: 1}} />
+      </View>
+    </View>
+  );
+}
+
+// ─── Menu Sheet Item ──────────────────────────────────────────────────────────
+
+function MenuItem({icon, label, sub, onPress, right}: {
+  icon: string; label: string; sub?: string; onPress: () => void; right?: React.ReactNode;
+}) {
+  return (
+    <TouchableOpacity style={menuItemStyle.row} onPress={onPress} activeOpacity={0.65}>
+      <Text style={menuItemStyle.icon}>{icon}</Text>
+      <View style={{flex: 1}}>
+        <Text style={menuItemStyle.label}>{label}</Text>
+        {sub ? <Text style={menuItemStyle.sub}>{sub}</Text> : null}
+      </View>
+      {right}
+    </TouchableOpacity>
+  );
+}
+const menuItemStyle = StyleSheet.create({
+  row: {flexDirection: 'row', alignItems: 'center', paddingVertical: 13, paddingHorizontal: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#1f2937'},
+  icon: {fontSize: 18, width: 30},
+  label: {color: '#f5f5f7', fontSize: 15},
+  sub: {color: '#6b7280', fontSize: 11, marginTop: 1},
+});
+
+// ─── Zoom Slider ─────────────────────────────────────────────────────────────
+
+function ZoomRow({zoom, onZoom}: {zoom: number; onZoom: (z: number) => void}) {
+  const steps = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
+  return (
+    <View style={zoomStyle.container}>
+      <TouchableOpacity onPress={() => {
+        const idx = steps.indexOf(zoom);
+        if (idx > 0) onZoom(steps[idx - 1]);
+      }} style={zoomStyle.btn}>
+        <Text style={zoomStyle.btnText}>−</Text>
+      </TouchableOpacity>
+      <Text style={zoomStyle.label}>{zoom}%</Text>
+      <TouchableOpacity onPress={() => {
+        const idx = steps.indexOf(zoom);
+        if (idx < steps.length - 1) onZoom(steps[idx + 1]);
+      }} style={zoomStyle.btn}>
+        <Text style={zoomStyle.btnText}>+</Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={() => onZoom(100)} style={zoomStyle.resetBtn}>
+        <Text style={zoomStyle.resetText}>Reset</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+const zoomStyle = StyleSheet.create({
+  container: {flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#1f2937'},
+  btn: {width: 36, height: 36, borderRadius: 18, backgroundColor: '#1f2937', alignItems: 'center', justifyContent: 'center'},
+  btnText: {color: '#fff', fontSize: 22, fontWeight: '300', lineHeight: 26},
+  label: {color: '#f5f5f7', fontSize: 15, fontWeight: '600', width: 52, textAlign: 'center'},
+  resetBtn: {marginLeft: 8, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: '#1f2937'},
+  resetText: {color: '#8b5cf6', fontSize: 13, fontWeight: '600'},
+});
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function BrowserScreen() {
   const {isConnected, chain} = useProxy();
@@ -101,6 +233,7 @@ export default function BrowserScreen() {
   const [inputUrl, setInputUrl] = useState('');
   const [editingUrl, setEditingUrl] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
   const [tabSwitcherVisible, setTabSwitcherVisible] = useState(false);
   const [libraryVisible, setLibraryVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -110,63 +243,44 @@ export default function BrowserScreen() {
   const [proxyWarningDismissed, setProxyWarningDismissed] = useState(false);
   const [autofillUser, setAutofillUser] = useState<{username: string; password: string} | null>(null);
   const [autofillDismissed, setAutofillDismissed] = useState(false);
-  const [scrollY, setScrollY] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [urlBarFocused, setUrlBarFocused] = useState(false);
+  // Translate modal
+  const [translateVisible, setTranslateVisible] = useState(false);
+  const [translateLang, setTranslateLang] = useState('es');
 
   const webviewRefs = useRef<Record<string, WebView | null>>({});
+  const inputRef = useRef<TextInput>(null);
   const inputUrlRef = useRef(inputUrl);
   inputUrlRef.current = inputUrl;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const pullAnim = useRef(new Animated.Value(0)).current;
   const scrollYRef = useRef(0);
-  scrollYRef.current = scrollY;
 
-  const activeTab = tabs.find(t => t.id === activeId) ?? tabs[0];
+  const activeTab = useMemo(() => tabs.find(t => t.id === activeId) ?? tabs[0], [tabs, activeId]);
 
   const browsingBlocked = settings.requireProxy && !isConnected;
-  const showUnprotectedWarning = !settings.requireProxy && !isConnected && !proxyWarningDismissed;
+  const showWarning = !settings.requireProxy && !isConnected && !proxyWarningDismissed;
 
-  // ---------- Tab persistence ----------
+  // ── Tab persistence ──────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
       try {
         const raw = await AsyncStorage.getItem(TABS_STORAGE_KEY);
         if (raw) {
           const saved = JSON.parse(raw);
-          if (saved?.tabs?.length) {
-            setTabs(saved.tabs);
-            setActiveId(saved.activeId ?? saved.tabs[0].id);
-          }
+          if (saved?.tabs?.length) { setTabs(saved.tabs); setActiveId(saved.activeId ?? saved.tabs[0].id); }
         }
-      } catch {
-        // fall back to the default fresh tab
-      } finally {
-        setTabsLoaded(true);
-      }
+      } catch {} finally { setTabsLoaded(true); }
     })();
   }, []);
 
   useEffect(() => {
-    if (!tabsLoaded) return; // don't overwrite saved tabs before the initial load resolves
+    if (!tabsLoaded) return;
     AsyncStorage.setItem(TABS_STORAGE_KEY, JSON.stringify({tabs, activeId})).catch(() => {});
   }, [tabs, activeId, tabsLoaded]);
 
-  // ---------- Back button ----------
-  useFocusEffect(
-    useCallback(() => {
-      const onBack = () => {
-        if (activeTab?.canGoBack) {
-          webviewRefs.current[activeTab.id]?.goBack();
-          return true;
-        }
-        return false;
-      };
-      BackHandler.addEventListener('hardwareBackPress', onBack);
-      return () => BackHandler.removeEventListener('hardwareBackPress', onBack);
-    }, [activeTab]),
-  );
-
-  // ---------- Download completion listener ----------
+  // ── Download listener ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!downloadEmitter) return;
     const sub = downloadEmitter.addListener('PhantomDownloadComplete', async (event: any) => {
@@ -174,40 +288,44 @@ export default function BrowserScreen() {
         const raw = await AsyncStorage.getItem(DOWNLOADS_KEY);
         const list = raw ? JSON.parse(raw) : [];
         const updated = list.map((d: any) =>
-          d.id === event.id
-            ? {...d, status: event.success ? 'done' : 'failed', localPath: event.localPath || d.localPath}
-            : d,
-        );
+          d.id === event.id ? {...d, status: event.success ? 'done' : 'failed', localPath: event.localPath || d.localPath} : d);
         await AsyncStorage.setItem(DOWNLOADS_KEY, JSON.stringify(updated));
-      } catch {
-        // best-effort — DownloadsScreen will just show "downloading" if this fails
-      }
+      } catch {}
     });
     return () => sub.remove();
   }, []);
 
+  // ── Back handler ──────────────────────────────────────────────────────────
+  useFocusEffect(useCallback(() => {
+    const onBack = () => {
+      if (activeTab?.canGoBack) { webviewRefs.current[activeTab.id]?.goBack(); return true; }
+      return false;
+    };
+    BackHandler.addEventListener('hardwareBackPress', onBack);
+    return () => BackHandler.removeEventListener('hardwareBackPress', onBack);
+  }, [activeTab]));
+
+  // ── Progress bar animation ────────────────────────────────────────────────
+  useEffect(() => {
+    Animated.timing(progressAnim, {toValue: loadProgress, duration: 100, useNativeDriver: false}).start();
+  }, [loadProgress, progressAnim]);
+
   const updateTab = useCallback((id: string, patch: Partial<TabState>) => {
-    setTabs(prev => prev.map(t => (t.id === id ? {...t, ...patch} : t)));
+    setTabs(prev => prev.map(t => t.id === id ? {...t, ...patch} : t));
   }, []);
 
-  const navigate = useCallback(
-    (target: string) => {
-      let nav = target.trim();
-      if (!nav) return;
-      if (!nav.startsWith('http://') && !nav.startsWith('https://')) {
-        if (nav.includes('.') && !nav.includes(' ')) {
-          nav = 'https://' + nav;
-        } else {
-          nav = SEARCH_ENGINE_URLS[settings.searchEngine] + encodeURIComponent(nav);
-        }
-      }
-      updateTab(activeId, {url: nav});
-      setInputUrl('');
-      setEditingUrl(false);
-      setAutofillDismissed(false);
-    },
-    [activeId, updateTab, settings.searchEngine],
-  );
+  const navigate = useCallback((target: string) => {
+    let nav = target.trim();
+    if (!nav) return;
+    if (!nav.startsWith('http://') && !nav.startsWith('https://')) {
+      nav = nav.includes('.') && !nav.includes(' ') ? 'https://' + nav
+        : SEARCH_ENGINE_URLS[settings.searchEngine ?? 'duckduckgo'] + encodeURIComponent(nav);
+    }
+    updateTab(activeId, {url: nav});
+    setInputUrl('');
+    setEditingUrl(false);
+    setAutofillDismissed(false);
+  }, [activeId, updateTab, settings.searchEngine]);
 
   const checkAutofill = useCallback(async (url: string) => {
     try {
@@ -215,36 +333,20 @@ export default function BrowserScreen() {
       if (!raw) return;
       const entries: PasswordEntry[] = JSON.parse(raw);
       const domain = getDomain(url);
-      const match = entries.find(
-        e => domain.includes(e.site.toLowerCase()) || e.site.toLowerCase().includes(domain),
-      );
-      if (match) {
-        setAutofillUser({username: match.username, password: match.password});
-      } else {
-        setAutofillUser(null);
-      }
-    } catch {
-      setAutofillUser(null);
-    }
+      const match = entries.find(e => domain.includes(e.site.toLowerCase()) || e.site.toLowerCase().includes(domain));
+      setAutofillUser(match ? {username: match.username, password: match.password} : null);
+    } catch { setAutofillUser(null); }
   }, []);
 
-  const handleNavState = useCallback(
-    (id: string, state: WebViewNavigation) => {
-      updateTab(id, {
-        canGoBack: state.canGoBack,
-        canGoForward: state.canGoForward,
-        title: state.title || '',
-        url: state.url || undefined!,
-      });
-      if (!state.loading && id === activeId) {
-        Library.addHistory(state.url, state.title || state.url);
-        Library.isBookmarked(state.url).then(setBookmarked);
-        setAutofillDismissed(false);
-        checkAutofill(state.url);
-      }
-    },
-    [activeId, updateTab, checkAutofill],
-  );
+  const handleNavState = useCallback((id: string, state: WebViewNavigation) => {
+    updateTab(id, {canGoBack: state.canGoBack, canGoForward: state.canGoForward, title: state.title || '', url: state.url || undefined!});
+    if (!state.loading && id === activeId) {
+      Library.addHistory(state.url, state.title || state.url);
+      Library.isBookmarked(state.url).then(setBookmarked);
+      setAutofillDismissed(false);
+      checkAutofill(state.url);
+    }
+  }, [activeId, updateTab, checkAutofill]);
 
   const openNewTab = useCallback(() => {
     const t = newTab();
@@ -254,51 +356,58 @@ export default function BrowserScreen() {
     setMenuVisible(false);
   }, []);
 
-  const closeTab = useCallback(
-    (id: string) => {
-      setTabs(prev => {
-        const remaining = prev.filter(t => t.id !== id);
-        if (remaining.length === 0) {
-          const t = newTab();
-          setActiveId(t.id);
-          delete webviewRefs.current[id];
-          return [t];
-        }
-        if (id === activeId) {
-          setActiveId(remaining[remaining.length - 1].id);
-        }
-        delete webviewRefs.current[id];
-        return remaining;
-      });
-    },
-    [activeId],
-  );
+  const closeTab = useCallback((id: string) => {
+    setTabs(prev => {
+      const remaining = prev.filter(t => t.id !== id);
+      if (remaining.length === 0) {
+        const t = newTab(); setActiveId(t.id); delete webviewRefs.current[id]; return [t];
+      }
+      if (id === activeId) setActiveId(remaining[remaining.length - 1].id);
+      delete webviewRefs.current[id];
+      return remaining;
+    });
+  }, [activeId]);
 
-  const selectTab = useCallback((id: string) => {
-    setActiveId(id);
-    setTabSwitcherVisible(false);
-  }, []);
+  const selectTab = useCallback((id: string) => { setActiveId(id); setTabSwitcherVisible(false); }, []);
 
   const toggleDesktopSite = useCallback(() => {
     if (!activeTab) return;
-    updateTab(activeTab.id, {desktopSite: !activeTab.desktopSite});
+    const next = !activeTab.desktopSite;
+    updateTab(activeTab.id, {desktopSite: next});
     setMenuVisible(false);
-    setTimeout(() => webviewRefs.current[activeTab.id]?.reload(), 50);
+    // Inject viewport override immediately, then reload for full effect
+    const script = next ? DESKTOP_VIEWPORT_JS : MOBILE_VIEWPORT_JS;
+    webviewRefs.current[activeTab.id]?.injectJavaScript(script);
+    setTimeout(() => webviewRefs.current[activeTab.id]?.reload(), 150);
   }, [activeTab, updateTab]);
+
+  const applyZoom = useCallback((tabId: string, zoom: number) => {
+    // Use CSS zoom + meta viewport override for reliable zoom across all sites
+    webviewRefs.current[tabId]?.injectJavaScript(`
+      (function() {
+        document.body.style.zoom = '${zoom / 100}';
+        document.documentElement.style.zoom = '${zoom / 100}';
+      })(); true;
+    `);
+  }, []);
+
+  const setZoom = useCallback((zoom: number) => {
+    if (!activeTab) return;
+    updateTab(activeTab.id, {zoom});
+    applyZoom(activeTab.id, zoom);
+  }, [activeTab, updateTab, applyZoom]);
 
   const toggleBookmark = useCallback(async () => {
     if (!activeTab) return;
-    const isNowBookmarked = await Library.toggleBookmark(activeTab.url, activeTab.title || activeTab.url);
-    setBookmarked(isNowBookmarked);
+    const isNow = await Library.toggleBookmark(activeTab.url, activeTab.title || activeTab.url);
+    setBookmarked(isNow);
     setMenuVisible(false);
   }, [activeTab]);
 
   const shareUrl = useCallback(async () => {
     if (!activeTab) return;
     setMenuVisible(false);
-    try {
-      await Share.share({message: activeTab.url});
-    } catch {}
+    try { await Share.share({message: activeTab.url}); } catch {}
   }, [activeTab]);
 
   const fillCredentials = useCallback(() => {
@@ -309,143 +418,101 @@ export default function BrowserScreen() {
       (function() {
         try {
           var pass = document.querySelector('input[type=password]');
-          var user = document.querySelector('input[type=email], input[type=text][name*=user i], input[type=text][id*=user i], input[autocomplete=username]');
+          var user = document.querySelector('input[type=email], input[type=text][name*=user i], input[autocomplete=username]');
           function setVal(el, val) {
             if (!el) return;
-            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-            setter.call(el, val);
-            el.dispatchEvent(new Event('input', {bubbles: true}));
-            el.dispatchEvent(new Event('change', {bubbles: true}));
+            var s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+            s.call(el, val);
+            el.dispatchEvent(new Event('input', {bubbles:true}));
           }
           if (user) setVal(user, '${u}');
           if (pass) setVal(pass, '${p}');
-        } catch (e) {}
-      })();
-      true;
+        } catch(e) {}
+      })(); true;
     `);
     setAutofillDismissed(true);
   }, [activeTab, autofillUser]);
 
-  // ---------- File downloads ----------
   const handleFileDownload = useCallback(async (downloadUrl: string) => {
     const filename = decodeURIComponent(downloadUrl.split('/').pop()?.split('?')[0] || `download_${Date.now()}`);
     const jsId = `dl_${Date.now()}`;
-
     try {
       const raw = await AsyncStorage.getItem(DOWNLOADS_KEY);
       const list = raw ? JSON.parse(raw) : [];
-      list.unshift({
-        id: jsId,
-        filename,
-        url: downloadUrl,
-        size: '',
-        status: 'downloading',
-        localPath: '',
-        savedAt: new Date().toISOString(),
-      });
+      list.unshift({id: jsId, filename, url: downloadUrl, size: '', status: 'downloading', localPath: '', savedAt: new Date().toISOString()});
       await AsyncStorage.setItem(DOWNLOADS_KEY, JSON.stringify(list));
     } catch {}
-
     if (DownloadModule?.startDownload) {
-      try {
-        await DownloadModule.startDownload(downloadUrl, filename, jsId);
-      } catch {
-        // Falls back to staying in the "downloading" state; user can still open the URL manually.
-      }
+      try { await DownloadModule.startDownload(downloadUrl, filename, jsId); } catch {}
     }
   }, []);
 
-  // ---------- Site permissions (camera/mic/location requests from pages) ----------
-  const handlePermissionRequest = useCallback(
-    async (event: any) => {
-      const resources: string[] = event.nativeEvent.resources || [];
-      const origin = activeTab ? getOrigin(activeTab.url) : '';
-      const rec = await SitePermissions.get(origin);
+  const handlePermissionRequest = useCallback(async (event: any) => {
+    const resources: string[] = event.nativeEvent.resources || [];
+    const origin = activeTab ? getOrigin(activeTab.url) : '';
+    const rec = await SitePermissions.get(origin);
+    const kindFor = (r: string) => r.toLowerCase().includes('video') ? 'camera' as const : 'microphone' as const;
+    const decisions = resources.map(r => rec[kindFor(r)]);
+    if (decisions.every(d => d === 'allow')) event.grant(resources); else event.deny();
+  }, [activeTab]);
 
-      const kindFor = (r: string) => {
-        if (r.toLowerCase().includes('video')) return 'camera' as const;
-        if (r.toLowerCase().includes('audio')) return 'microphone' as const;
-        return 'camera' as const;
-      };
+  const translatePage = useCallback(() => {
+    if (!activeTab) return;
+    const url = `https://translate.google.com/translate?sl=auto&tl=${translateLang}&u=${encodeURIComponent(activeTab.url)}`;
+    updateTab(activeId, {url});
+    setMenuVisible(false);
+    setTranslateVisible(false);
+  }, [activeTab, activeId, updateTab, translateLang]);
 
-      const decisions = resources.map(r => rec[kindFor(r)]);
-      if (decisions.every(d => d === 'allow')) {
-        event.grant(resources);
-      } else {
-        // 'ask' or 'deny' both default to deny here — the user can flip to "allow"
-        // anytime from the site info panel (🔒 icon) rather than being interrupted mid-page.
-        event.deny();
-      }
-    },
-    [activeTab],
-  );
-
-  const userAgent = activeTab?.desktopSite ? DESKTOP_UA : MOBILE_UA;
-
-  const tabSummaries: TabSummary[] = useMemo(
-    () => tabs.map(t => ({id: t.id, title: t.title, url: t.url})),
-    [tabs],
-  );
-
-  const findScript = useCallback(
-    (text: string) => {
-      if (!activeTab) return;
-      const escaped = text.replace(/'/g, "\\'");
-      webviewRefs.current[activeTab.id]?.injectJavaScript(`
-        (function() {
-          try {
-            if (window.getSelection) window.getSelection().removeAllRanges();
-            if ('${escaped}'.length > 0 && window.find) {
-              window.find('${escaped}', false, false, true, false, true, false);
-            }
-          } catch (e) {}
-        })();
-        true;
-      `);
-    },
-    [activeTab],
-  );
-
-  const findNext = useCallback(() => {
-    activeTab &&
-      webviewRefs.current[activeTab.id]?.injectJavaScript(`
-      (function() { try { window.find && window.find('', false, false, true); } catch(e) {} })(); true;
+  const readingMode = useCallback(() => {
+    if (!activeTab) return;
+    setMenuVisible(false);
+    webviewRefs.current[activeTab.id]?.injectJavaScript(`
+      (function() {
+        try {
+          // Remove nav, ads, sidebars; center and enlarge body text
+          ['nav','header','footer','aside','[class*="ad"]','[class*="sidebar"]','[id*="sidebar"]'].forEach(sel => {
+            document.querySelectorAll(sel).forEach(el => el.style.display = 'none');
+          });
+          var main = document.querySelector('article,main,[role="main"]') || document.body;
+          main.style.cssText = 'max-width:680px;margin:32px auto;padding:0 16px;font-size:20px;line-height:1.7;color:#1a1a1a;font-family:Georgia,serif;background:#fff';
+          document.body.style.background = '#fff';
+        } catch(e) {}
+      })(); true;
     `);
   }, [activeTab]);
 
-  // ---------- Progress bar ----------
-  const handleLoadProgress = useCallback(
-    (e: any) => {
-      Animated.timing(progressAnim, {
-        toValue: e.nativeEvent.progress,
-        duration: 150,
-        useNativeDriver: false,
-      }).start();
-    },
-    [progressAnim],
-  );
+  const findScript = useCallback((text: string) => {
+    if (!activeTab) return;
+    const escaped = text.replace(/'/g, "\\'");
+    webviewRefs.current[activeTab.id]?.injectJavaScript(`
+      (function() {
+        try {
+          if (window.getSelection) window.getSelection().removeAllRanges();
+          if ('${escaped}'.length > 0 && window.find) window.find('${escaped}', false, false, true, false, true, false);
+        } catch(e) {}
+      })(); true;
+    `);
+  }, [activeTab]);
 
-  // ---------- Pull to refresh (custom, since WebView isn't a ScrollView) ----------
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_evt, gesture) =>
-        scrollYRef.current <= 0 && gesture.dy > 12 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
-      onPanResponderMove: (_evt, gesture) => {
-        if (gesture.dy > 0) {
-          pullAnim.setValue(Math.min(gesture.dy, 90));
-        }
-      },
-      onPanResponderRelease: (_evt, gesture) => {
-        if (gesture.dy > 70 && activeTab) {
-          setRefreshing(true);
-          webviewRefs.current[activeTab.id]?.reload();
-          setTimeout(() => setRefreshing(false), 800);
-        }
-        Animated.spring(pullAnim, {toValue: 0, useNativeDriver: false}).start();
-      },
-    }),
-  ).current;
+  const findNext = useCallback(() => {
+    activeTab && webviewRefs.current[activeTab.id]?.injectJavaScript(
+      `(function(){try{window.find&&window.find('',false,false,true);}catch(e){}})();true;`);
+  }, [activeTab]);
+
+  const panResponder = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => false,
+    onMoveShouldSetPanResponder: (_e, g) => scrollYRef.current <= 0 && g.dy > 12 && Math.abs(g.dy) > Math.abs(g.dx),
+    onPanResponderMove: (_e, g) => { if (g.dy > 0) pullAnim.setValue(Math.min(g.dy, 80)); },
+    onPanResponderRelease: (_e, g) => {
+      if (g.dy > 60 && activeTab) {
+        setRefreshing(true);
+        webviewRefs.current[activeTab.id]?.reload();
+        setTimeout(() => setRefreshing(false), 800);
+      }
+      Animated.spring(pullAnim, {toValue: 0, useNativeDriver: false}).start();
+    },
+  })).current;
 
   const webviewProps = useMemo(() => ({
     javaScriptEnabled: true,
@@ -455,47 +522,114 @@ export default function BrowserScreen() {
     injectedJavaScriptBeforeContentLoaded: settings.adBlock ? ADBLOCKER_JS : undefined,
   }), [settings.incognito, settings.adBlock]);
 
+  const tabSummaries: TabSummary[] = useMemo(() => tabs.map(t => ({id: t.id, title: t.title, url: t.url})), [tabs]);
+  const userAgent = activeTab?.desktopSite ? DESKTOP_UA : MOBILE_UA;
+
   if (!settings.loaded) return null;
 
-  return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={theme.colors.bg} />
+  const secure = isHttps(activeTab?.url ?? '');
+  const domain = getDomain(activeTab?.url ?? '');
+  const canGoBack = activeTab?.canGoBack ?? false;
+  const canGoForward = activeTab?.canGoForward ?? false;
 
-      <View style={styles.statusBar}>
-        <View style={[styles.dot, {backgroundColor: isConnected ? theme.colors.success : theme.colors.danger}]} />
-        <Text style={styles.statusText} numberOfLines={1}>
-          {isConnected
-            ? `Protected · ${chain?.exitIP ?? '...'}`
-            : settings.requireProxy
-            ? 'No proxy — browsing locked'
-            : 'No proxy — browsing unprotected'}
+  // ── Render ────────────────────────────────────────────────────────────────
+  return (
+    <View style={S.root}>
+      <StatusBar barStyle="dark-content" backgroundColor="#f1f3f4" />
+
+      {/* ── Proxy status strip ── */}
+      <View style={[S.proxyStrip, {backgroundColor: isConnected ? '#ecfdf5' : '#fef2f2'}]}>
+        <View style={[S.proxyDot, {backgroundColor: isConnected ? '#22c55e' : '#ef4444'}]} />
+        <Text style={[S.proxyText, {color: isConnected ? '#15803d' : '#b91c1c'}]} numberOfLines={1}>
+          {isConnected ? `Protected · ${chain?.exitIP ?? '...'}` : settings.requireProxy ? 'No proxy — browsing locked' : 'Unprotected'}
         </Text>
       </View>
 
-      {/* Top loading progress bar */}
-      <View style={styles.progressTrack}>
-        <Animated.View
-          style={[
-            styles.progressFill,
-            {
-              width: progressAnim.interpolate({inputRange: [0, 1], outputRange: ['0%', '100%']}),
-              opacity: loading ? 1 : 0,
-            },
-          ]}
-        />
+      {/* ── Top address bar (Chrome-style) ── */}
+      <View style={S.topBar}>
+        <TouchableOpacity
+          style={S.navBtn}
+          onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goBack()}
+          disabled={!canGoBack}>
+          <BackIcon color={canGoBack ? '#202124' : '#bdc1c6'} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={S.navBtn}
+          onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goForward()}
+          disabled={!canGoForward}>
+          <ForwardIcon color={canGoForward ? '#202124' : '#bdc1c6'} />
+        </TouchableOpacity>
+
+        {/* ── Address pill ── */}
+        {editingUrl ? (
+          <View style={S.addressPillEdit}>
+            <TextInput
+              ref={inputRef}
+              style={S.addressInput}
+              value={inputUrl}
+              onChangeText={setInputUrl}
+              onSubmitEditing={() => navigate(inputUrlRef.current)}
+              onBlur={() => setTimeout(() => setEditingUrl(false), 120)}
+              returnKeyType="go"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              selectTextOnFocus
+              autoFocus
+              placeholder="Search or type URL"
+              placeholderTextColor="#9aa0a6"
+            />
+            {inputUrl.length > 0 && (
+              <TouchableOpacity onPress={() => setInputUrl('')} style={S.clearBtn}>
+                <Text style={S.clearBtnText}>✕</Text>
+              </TouchableOpacity>
+            )}
+            <AddressAutocomplete query={inputUrl} onSelect={navigate} />
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={S.addressPill}
+            onPress={() => { setInputUrl(activeTab?.url ?? ''); setEditingUrl(true); }}
+            activeOpacity={0.7}>
+            <TouchableOpacity onPress={() => setSiteInfoVisible(true)} hitSlop={{top:8,bottom:8,left:6,right:6}}>
+              <LockIcon secure={secure} />
+            </TouchableOpacity>
+            <Text style={S.addressText} numberOfLines={1}>{domain || 'Search or type URL'}</Text>
+            {loading && (
+              <View style={S.loadingDot}>
+                <Animated.View style={[S.loadingDotInner, {opacity: progressAnim.interpolate({inputRange:[0,0.5,1],outputRange:[0.3,1,0.3]})}]} />
+              </View>
+            )}
+          </TouchableOpacity>
+        )}
+
+        <TouchableOpacity
+          style={S.navBtn}
+          onPress={() => { if (loading) webviewRefs.current[activeTab?.id ?? '']?.stopLoading(); else webviewRefs.current[activeTab?.id ?? '']?.reload(); }}>
+          {loading
+            ? <Text style={{color: '#5f6368', fontSize: 18}}>✕</Text>
+            : <ReloadIcon color="#5f6368" />}
+        </TouchableOpacity>
       </View>
 
-      {showUnprotectedWarning && (
-        <View style={styles.warningBanner}>
-          <Text style={styles.warningText}>
-            ⚠️ You're browsing without a proxy. Your real IP is visible to sites.
-          </Text>
+      {/* ── Progress bar ── */}
+      {loading && (
+        <Animated.View style={[S.progressBar, {
+          width: progressAnim.interpolate({inputRange: [0, 1], outputRange: ['0%', '100%']}),
+        }]} />
+      )}
+
+      {/* ── Unprotected warning banner ── */}
+      {showWarning && (
+        <View style={S.warningBanner}>
+          <Text style={S.warningText}>⚠️ No proxy — your real IP is visible to sites</Text>
           <TouchableOpacity onPress={() => setProxyWarningDismissed(true)}>
-            <Text style={styles.warningDismiss}>✕</Text>
+            <Text style={S.warningClose}>✕</Text>
           </TouchableOpacity>
         </View>
       )}
 
+      {/* ── Autofill banner ── */}
       {autofillUser && !autofillDismissed && (
         <PasswordAutofillBanner
           username={autofillUser.username}
@@ -504,136 +638,72 @@ export default function BrowserScreen() {
         />
       )}
 
-      <View style={styles.urlBar}>
-        <TouchableOpacity
-          onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goBack()}
-          disabled={!activeTab?.canGoBack}
-          style={styles.iconBtn}>
-          <ChevronIcon direction="left" color={activeTab?.canGoBack ? theme.colors.text : theme.colors.textFaint} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goForward()}
-          disabled={!activeTab?.canGoForward}
-          style={styles.iconBtn}>
-          <ChevronIcon direction="right" color={activeTab?.canGoForward ? theme.colors.text : theme.colors.textFaint} />
-        </TouchableOpacity>
-
-        <View style={{flex: 1}}>
-          {editingUrl ? (
-            <TextInput
-              style={styles.urlInput}
-              placeholder={activeTab?.url}
-              placeholderTextColor={theme.colors.textFaint}
-              value={inputUrl}
-              onChangeText={setInputUrl}
-              onSubmitEditing={() => navigate(inputUrlRef.current)}
-              onBlur={() => setTimeout(() => setEditingUrl(false), 150)}
-              returnKeyType="go"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              autoFocus
-            />
-          ) : (
-            <TouchableOpacity
-              style={styles.urlDisplay}
-              onPress={() => {
-                setInputUrl(activeTab?.url ?? '');
-                setEditingUrl(true);
-              }}>
-              <TouchableOpacity
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
-                onPress={() => setSiteInfoVisible(true)}
-                style={{marginRight: 6}}>
-                <LockIcon color={isConnected ? theme.colors.success : theme.colors.danger} />
-              </TouchableOpacity>
-              <Text style={styles.urlDisplayText} numberOfLines={1}>
-                {getDomain(activeTab?.url ?? '')}
-              </Text>
-            </TouchableOpacity>
-          )}
-          {editingUrl && <AddressAutocomplete query={inputUrl} onSelect={navigate} />}
-        </View>
-
-        <TouchableOpacity onPress={() => activeTab && webviewRefs.current[activeTab.id]?.reload()} style={styles.iconBtn}>
-          <ReloadIcon color={theme.colors.text} />
-        </TouchableOpacity>
-      </View>
-
+      {/* ── Find bar ── */}
       {findVisible && (
         <FindBar
           onFind={findScript}
           onNext={findNext}
           onPrev={findNext}
-          onClose={() => {
-            setFindVisible(false);
-            findScript('');
-          }}
+          onClose={() => { setFindVisible(false); findScript(''); }}
         />
       )}
 
-      <View style={styles.webviewArea} {...panResponder.panHandlers}>
-        <Animated.View style={[styles.pullIndicator, {height: pullAnim}]}>
-          {(refreshing || (pullAnim as any)._value > 10) && (
-            <ActivityIndicator size="small" color={theme.colors.accent} />
-          )}
+      {/* ── WebView area ── */}
+      <View style={S.webviewArea} {...panResponder.panHandlers}>
+        <Animated.View style={[S.pullIndicator, {height: pullAnim}]}>
+          {refreshing && <Text style={{color: '#8b5cf6', fontSize: 18}}>↻</Text>}
         </Animated.View>
 
         {browsingBlocked ? (
-          <View style={styles.noProxy}>
-            <Text style={styles.noProxyIcon}>🛡️</Text>
-            <Text style={styles.noProxyTitle}>No Proxy Connected</Text>
-            <Text style={styles.noProxyText}>
-              Go to the Proxy tab to connect your SOCKS5 proxy before browsing. You can allow
-              unprotected browsing instead from Settings → "Require Proxy".
-            </Text>
+          <View style={S.noProxy}>
+            <Text style={S.noProxyIcon}>🛡️</Text>
+            <Text style={S.noProxyTitle}>No Proxy Connected</Text>
+            <Text style={S.noProxyBody}>Go to the Proxy tab and connect your SOCKS5 proxy before browsing. To allow unprotected browsing, go to Settings → Require Proxy.</Text>
           </View>
         ) : (
           tabs.map(tab => (
-            <View
-              key={tab.id}
-              style={[StyleSheet.absoluteFill, {display: tab.id === activeId ? 'flex' : 'none'}]}>
+            <View key={tab.id} style={[StyleSheet.absoluteFill, {display: tab.id === activeId ? 'flex' : 'none'}]}>
               <WebView
-                ref={ref => {
-                  webviewRefs.current[tab.id] = ref;
-                }}
+                ref={ref => { webviewRefs.current[tab.id] = ref; }}
                 source={{uri: tab.url}}
-                style={styles.webview}
+                style={S.webview}
                 {...webviewProps}
                 userAgent={tab.id === activeId ? userAgent : MOBILE_UA}
                 onLoadStart={() => tab.id === activeId && setLoading(true)}
-                onLoadEnd={() => tab.id === activeId && setLoading(false)}
-                onLoadProgress={tab.id === activeId ? handleLoadProgress : undefined}
-                onScroll={tab.id === activeId ? e => setScrollY(e.nativeEvent.contentOffset.y) : undefined}
+                onLoadEnd={() => { if (tab.id === activeId) { setLoading(false); setLoadProgress(0); } }}
+                onLoadProgress={tab.id === activeId ? e => setLoadProgress(e.nativeEvent.progress) : undefined}
+                onScroll={tab.id === activeId ? e => { scrollYRef.current = e.nativeEvent.contentOffset.y; } : undefined}
                 onNavigationStateChange={state => handleNavState(tab.id, state)}
                 onFileDownload={tab.id === activeId ? e => handleFileDownload(e.nativeEvent.downloadUrl) : undefined}
                 onPermissionRequest={tab.id === activeId ? handlePermissionRequest : undefined}
-                onShouldStartLoadWithRequest={request => {
-                  return !settings.adBlock || !AdBlocker.shouldBlock(request.url);
-                }}
+                onShouldStartLoadWithRequest={request => !settings.adBlock || !AdBlocker.shouldBlock(request.url)}
+                injectedJavaScript={tab.zoom !== 100 ? `document.body.style.zoom='${tab.zoom/100}';true;` : undefined}
               />
             </View>
           ))
         )}
       </View>
 
-      <View style={styles.bottomBar}>
-        <TouchableOpacity style={styles.bottomBtn} onPress={openNewTab}>
-          <PlusIcon color={theme.colors.text} />
+      {/* ── Bottom Chrome-style toolbar ── */}
+      <View style={S.bottomBar}>
+        <TouchableOpacity style={S.bottomBtn} onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goBack()} disabled={!canGoBack}>
+          <BackIcon color={canGoBack ? '#202124' : '#bdc1c6'} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.bottomBtn} onPress={() => setLibraryVisible(true)}>
-          <Text style={styles.bottomIcon}>📚</Text>
+        <TouchableOpacity style={S.bottomBtn} onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goForward()} disabled={!canGoForward}>
+          <ForwardIcon color={canGoForward ? '#202124' : '#bdc1c6'} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.bottomBtn} onPress={() => setTabSwitcherVisible(true)}>
-          <View style={styles.tabCountBadge}>
-            <Text style={styles.tabCountText}>{tabs.length}</Text>
-          </View>
+        <TouchableOpacity style={S.bottomBtn} onPress={openNewTab}>
+          <Text style={{color: '#202124', fontSize: 22, fontWeight: '300'}}>+</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.bottomBtn} onPress={() => setMenuVisible(true)}>
-          <DotsIcon color={theme.colors.text} />
+        <TouchableOpacity style={S.bottomBtn} onPress={() => setTabSwitcherVisible(true)}>
+          <TabsIcon count={tabs.length} color="#202124" />
+        </TouchableOpacity>
+        <TouchableOpacity style={S.bottomBtn} onPress={() => setMenuVisible(true)}>
+          <MenuIcon color="#202124" />
         </TouchableOpacity>
       </View>
 
+      {/* ── Modals ── */}
       <TabSwitcher
         visible={tabSwitcherVisible}
         tabs={tabSummaries}
@@ -658,27 +728,73 @@ export default function BrowserScreen() {
         onDismiss={() => setSiteInfoVisible(false)}
       />
 
-      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
-        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
-          <View style={styles.menuSheet}>
-            <TouchableOpacity style={styles.menuItem} onPress={toggleBookmark}>
-              <Text style={styles.menuItemText}>{bookmarked ? '★ Remove Bookmark' : '☆ Add Bookmark'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={toggleDesktopSite}>
-              <Text style={styles.menuItemText}>
-                {activeTab?.desktopSite ? '📱 Switch to Mobile Site' : '🖥️ Request Desktop Site'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => {
-                setFindVisible(true);
-                setMenuVisible(false);
-              }}>
-              <Text style={styles.menuItemText}>🔍 Find in Page</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={shareUrl}>
-              <Text style={styles.menuItemText}>↗ Share Page</Text>
+      {/* ── Chrome-style overflow menu bottom sheet ── */}
+      <Modal visible={menuVisible} transparent animationType="slide" onRequestClose={() => setMenuVisible(false)}>
+        <TouchableOpacity style={S.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
+          <View style={S.menuSheet}>
+            {/* drag handle */}
+            <View style={S.menuHandle} />
+
+            {/* Zoom row always visible at top */}
+            <ZoomRow zoom={activeTab?.zoom ?? 100} onZoom={setZoom} />
+
+            {/* Quick action row like Chrome */}
+            <View style={S.menuQuickRow}>
+              {[
+                {icon: bookmarked ? '★' : '☆', label: bookmarked ? 'Bookmarked' : 'Bookmark', action: toggleBookmark},
+                {icon: '📚', label: 'Library', action: () => { setMenuVisible(false); setLibraryVisible(true); }},
+                {icon: '↓', label: 'Downloads', action: () => setMenuVisible(false)},
+                {icon: '↗', label: 'Share', action: shareUrl},
+              ].map(({icon, label, action}) => (
+                <TouchableOpacity key={label} style={S.menuQuickBtn} onPress={action}>
+                  <Text style={S.menuQuickIcon}>{icon}</Text>
+                  <Text style={S.menuQuickLabel}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={S.menuDivider} />
+
+            <MenuItem
+              icon={activeTab?.desktopSite ? '📱' : '🖥️'}
+              label={activeTab?.desktopSite ? 'Switch to Mobile Site' : 'Request Desktop Site'}
+              onPress={toggleDesktopSite}
+            />
+            <MenuItem icon="🔍" label="Find in Page" onPress={() => { setFindVisible(true); setMenuVisible(false); }} />
+            <MenuItem
+              icon="🌐"
+              label="Translate Page"
+              sub={`Target: ${translateLang.toUpperCase()}`}
+              onPress={() => setTranslateVisible(true)}
+            />
+            <MenuItem icon="📰" label="Reading Mode" onPress={readingMode} />
+            <MenuItem icon="🔒" label="Site Info" onPress={() => { setSiteInfoVisible(true); setMenuVisible(false); }} />
+            <MenuItem icon="⚙️" label="Settings" onPress={() => setMenuVisible(false)} />
+
+            <View style={{height: 16}} />
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Translate modal ── */}
+      <Modal visible={translateVisible} transparent animationType="fade" onRequestClose={() => setTranslateVisible(false)}>
+        <TouchableOpacity style={S.menuOverlay} activeOpacity={1} onPress={() => setTranslateVisible(false)}>
+          <View style={[S.menuSheet, {paddingHorizontal: 20, paddingTop: 24, paddingBottom: 32}]}>
+            <Text style={{color: '#f5f5f7', fontSize: 17, fontWeight: '700', marginBottom: 16}}>Translate To</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={{flexDirection: 'row', gap: 8}}>
+                {[['en','English'],['es','Spanish'],['fr','French'],['de','German'],['ar','Arabic'],['zh','Chinese'],['ja','Japanese'],['pt','Portuguese'],['ru','Russian'],['hi','Hindi']].map(([code, name]) => (
+                  <TouchableOpacity
+                    key={code}
+                    onPress={() => setTranslateLang(code)}
+                    style={[S.langChip, translateLang === code && S.langChipActive]}>
+                    <Text style={[S.langChipText, translateLang === code && {color: '#fff'}]}>{name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+            <TouchableOpacity style={S.translateBtn} onPress={translatePage}>
+              <Text style={S.translateBtnText}>Translate Now</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -687,99 +803,132 @@ export default function BrowserScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: theme.colors.bg},
-  statusBar: {
+// ─── Styles ───────────────────────────────────────────────────────────────────
+// Light theme matching Chrome's light UI. The rest of the app (Settings etc.)
+// still uses the dark purple theme — only the browser chrome is light.
+
+const S = StyleSheet.create({
+  root: {flex: 1, backgroundColor: '#fff'},
+
+  // Proxy strip
+  proxyStrip: {flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 4},
+  proxyDot: {width: 7, height: 7, borderRadius: 4, marginRight: 6},
+  proxyText: {fontSize: 11, fontWeight: '500', flex: 1},
+
+  // Top bar
+  topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: theme.colors.surface,
-  },
-  dot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
-  statusText: {color: theme.colors.textDim, fontSize: 11, flex: 1},
-  progressTrack: {height: 2, backgroundColor: 'transparent'},
-  progressFill: {height: 2, backgroundColor: theme.colors.accent},
-  warningBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#3a1d00',
-    paddingHorizontal: 12,
+    backgroundColor: '#f1f3f4',
+    paddingHorizontal: 4,
     paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#5a2d00',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#dadce0',
   },
-  warningText: {color: theme.colors.warning, fontSize: 11, flex: 1},
-  warningDismiss: {color: theme.colors.warning, fontSize: 14, paddingHorizontal: 8, fontWeight: '700'},
-  urlBar: {
+  navBtn: {width: 38, height: 38, alignItems: 'center', justifyContent: 'center'},
+
+  // Address pill (display mode)
+  addressPill: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: theme.colors.surfaceAlt,
-    paddingHorizontal: 6,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  iconBtn: {paddingHorizontal: 8, paddingVertical: 6},
-  urlInput: {
-    backgroundColor: theme.colors.surface,
-    color: theme.colors.text,
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    fontSize: 13,
-    marginHorizontal: 4,
-    borderWidth: 1,
-    borderColor: theme.colors.accentDim,
-  },
-  urlDisplay: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.pill,
+    backgroundColor: '#fff',
+    borderRadius: 24,
     paddingHorizontal: 14,
     paddingVertical: 10,
     marginHorizontal: 4,
     borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderColor: '#dadce0',
+    elevation: 1,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 1},
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
   },
-  urlDisplayText: {color: theme.colors.text, fontSize: 13, flex: 1},
-  webviewArea: {flex: 1},
-  pullIndicator: {alignItems: 'center', justifyContent: 'center', overflow: 'hidden'},
+  addressText: {flex: 1, color: '#202124', fontSize: 14, fontWeight: '400'},
+
+  // Address pill (edit mode)
+  addressPillEdit: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    marginHorizontal: 4,
+    borderWidth: 2,
+    borderColor: '#1a73e8',
+    elevation: 2,
+  },
+  addressInput: {flex: 1, color: '#202124', fontSize: 14, paddingVertical: 4},
+  clearBtn: {paddingHorizontal: 6},
+  clearBtnText: {color: '#5f6368', fontSize: 13},
+
+  // Loading dot in address bar
+  loadingDot: {width: 8, height: 8, marginLeft: 6},
+  loadingDotInner: {width: 8, height: 8, borderRadius: 4, backgroundColor: '#1a73e8'},
+
+  // Progress bar (blue, Chrome-style)
+  progressBar: {
+    height: 3,
+    backgroundColor: '#1a73e8',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    zIndex: 99,
+  },
+
+  // Warning banner
+  warningBanner: {flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff3cd', paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#ffc107'},
+  warningText: {color: '#664d03', fontSize: 12, flex: 1},
+  warningClose: {color: '#664d03', fontSize: 14, paddingHorizontal: 6, fontWeight: '700'},
+
+  // WebView area
+  webviewArea: {flex: 1, backgroundColor: '#fff'},
+  pullIndicator: {alignItems: 'center', justifyContent: 'center', overflow: 'hidden', backgroundColor: '#fff'},
   webview: {flex: 1},
-  noProxy: {flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32},
-  noProxyIcon: {fontSize: 56, marginBottom: 16},
-  noProxyTitle: {color: theme.colors.text, fontSize: 20, fontWeight: '700', marginBottom: 12},
-  noProxyText: {color: theme.colors.textDim, fontSize: 14, textAlign: 'center', lineHeight: 22},
+
+  // No proxy
+  noProxy: {flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: '#f8f9fa'},
+  noProxyIcon: {fontSize: 64, marginBottom: 20},
+  noProxyTitle: {color: '#202124', fontSize: 20, fontWeight: '700', marginBottom: 12},
+  noProxyBody: {color: '#5f6368', fontSize: 14, textAlign: 'center', lineHeight: 22},
+
+  // Bottom bar — Chrome layout: back | forward | new-tab | tabs | menu
   bottomBar: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    backgroundColor: theme.colors.surface,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
+    backgroundColor: '#f1f3f4',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#dadce0',
   },
-  bottomBtn: {paddingHorizontal: 18, paddingVertical: 4, alignItems: 'center', justifyContent: 'center'},
-  bottomIcon: {color: theme.colors.text, fontSize: 18},
-  tabCountBadge: {
-    width: 26,
-    height: 22,
-    borderRadius: 7,
-    borderWidth: 1.5,
-    borderColor: theme.colors.text,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabCountText: {color: theme.colors.text, fontSize: 11, fontWeight: '700'},
-  menuOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end'},
+  bottomBtn: {flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 4},
+
+  // Overflow menu sheet
+  menuOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end'},
   menuSheet: {
-    backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: theme.radius.lg,
-    borderTopRightRadius: theme.radius.lg,
-    paddingVertical: 8,
-    paddingBottom: 24,
+    backgroundColor: '#111827',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 8,
   },
-  menuItem: {paddingVertical: 14, paddingHorizontal: 20},
-  menuItemText: {color: theme.colors.text, fontSize: 15},
+  menuHandle: {width: 36, height: 4, backgroundColor: '#374151', borderRadius: 2, alignSelf: 'center', marginBottom: 8},
+  menuDivider: {height: StyleSheet.hairlineWidth, backgroundColor: '#1f2937', marginVertical: 4},
+
+  // Quick action row (bookmark / library / downloads / share)
+  menuQuickRow: {flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16, paddingHorizontal: 8},
+  menuQuickBtn: {alignItems: 'center', gap: 6, flex: 1},
+  menuQuickIcon: {fontSize: 22},
+  menuQuickLabel: {color: '#d1d5db', fontSize: 11, fontWeight: '500', textAlign: 'center'},
+
+  // Translate
+  langChip: {paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1f2937', borderWidth: 1, borderColor: '#374151'},
+  langChipActive: {backgroundColor: '#7c3aed', borderColor: '#7c3aed'},
+  langChipText: {color: '#9ca3af', fontSize: 13, fontWeight: '600'},
+  translateBtn: {marginTop: 20, backgroundColor: '#7c3aed', borderRadius: 12, paddingVertical: 14, alignItems: 'center'},
+  translateBtnText: {color: '#fff', fontWeight: '700', fontSize: 15},
 });
