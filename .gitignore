@@ -27,3 +27,6 @@ android/app/debug.keystore
 Thumbs.db
 src/config/crashReportingConfig.ts
 src/services/crashReportConfig.local.ts
+deliver/
+store/
+GITIGNORE_ADDITION.txt

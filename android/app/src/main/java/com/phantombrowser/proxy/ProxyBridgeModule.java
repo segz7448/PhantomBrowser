@@ -88,6 +88,14 @@ public class ProxyBridgeModule extends ReactContextBaseJavaModule {
                 // 2. Start the local bridge
                 startLocalBridge(localPort);
 
+                // 3. Tell Android's HTTP stack (and the WebView) to route
+                //    through our local HTTP bridge. System.setProperty is the
+                //    reliable cross-version way to do this for WebView on Android.
+                System.setProperty("http.proxyHost",  "127.0.0.1");
+                System.setProperty("http.proxyPort",  String.valueOf(localPort));
+                System.setProperty("https.proxyHost", "127.0.0.1");
+                System.setProperty("https.proxyPort", String.valueOf(localPort));
+
                 WritableMap result = Arguments.createMap();
                 result.putBoolean("success", true);
                 result.putString("exitIP", exitIP);
@@ -157,6 +165,11 @@ public class ProxyBridgeModule extends ReactContextBaseJavaModule {
         running.set(false);
         try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) {}
         if (threadPool != null) threadPool.shutdownNow();
+        // Clear the system proxy so WebView goes back to direct internet.
+        System.clearProperty("http.proxyHost");
+        System.clearProperty("http.proxyPort");
+        System.clearProperty("https.proxyHost");
+        System.clearProperty("https.proxyPort");
         Log.i(TAG, "Bridge stopped");
     }
 
