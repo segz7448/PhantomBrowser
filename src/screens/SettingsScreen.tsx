@@ -6,7 +6,7 @@ import Toast from 'react-native-toast-message';
 import {useProxy} from '../services/ProxyContext';
 import {useAppSettings, SEARCH_ENGINE_URLS} from '../services/AppSettings';
 
-export default function SettingsScreen() {
+export default function SettingsScreen({navigation}: {navigation?: any}) {
   const {disconnect} = useProxy();
   const settings = useAppSettings();
 
@@ -109,6 +109,11 @@ export default function SettingsScreen() {
       <InfoRow label="Cloud" value="None — local only" />
 
       <SectionHeader title="Data" />
+      <TouchableOpacity
+        style={styles.dangerBtn}
+        onPress={() => navigation?.navigate('CrashLogs')}>
+        <Text style={styles.infoBtn}>🐛 View Crash Logs</Text>
+      </TouchableOpacity>
       <TouchableOpacity style={styles.dangerBtn} onPress={clearData}>
         <Text style={styles.dangerBtnText}>🗑 Clear All Data</Text>
       </TouchableOpacity>
@@ -194,6 +199,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   dangerBtnText: {color: '#ef4444', fontWeight: '700'},
+  infoBtn: {color: '#7c3aed', fontWeight: '700'},
   searchEngineRow: {
     backgroundColor: '#111827',
     borderRadius: 10,

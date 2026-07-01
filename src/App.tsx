@@ -2,6 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {View, StyleSheet} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
+import {createStackNavigator} from '@react-navigation/stack';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {GestureHandlerRootView} from 'react-native-gesture-handler';
 import Toast from 'react-native-toast-message';
@@ -11,6 +12,7 @@ import ProxyScreen from './screens/ProxyScreen';
 import PasswordScreen from './screens/PasswordScreen';
 import DownloadsScreen from './screens/DownloadsScreen';
 import SettingsScreen from './screens/SettingsScreen';
+import CrashLogsScreen from './screens/CrashLogsScreen';
 import {ProxyProvider} from './services/ProxyContext';
 import {AppSettingsProvider} from './services/AppSettings';
 import {installJSCrashHandler, getPendingCrash, clearPendingCrash, buildGithubIssueUrl} from './services/CrashReporter';
@@ -20,6 +22,16 @@ import CrashReportModal from './components/CrashReportModal';
 installJSCrashHandler();
 
 const Tab = createBottomTabNavigator();
+const SettingsStack = createStackNavigator();
+
+function SettingsNavigator() {
+  return (
+    <SettingsStack.Navigator screenOptions={{headerShown: false}}>
+      <SettingsStack.Screen name="SettingsMain" component={SettingsScreen} />
+      <SettingsStack.Screen name="CrashLogs" component={CrashLogsScreen} />
+    </SettingsStack.Navigator>
+  );
+}
 
 // ─── Tab bar icons (pure View-based, no icon font dependency) ─────────────────
 
@@ -175,7 +187,7 @@ export default function App() {
                 <Tab.Screen name="Proxy"    component={ProxyScreen}    options={{tabBarLabel: 'Proxy'}} />
                 <Tab.Screen name="Vault"    component={PasswordScreen} options={{tabBarLabel: 'Vault'}} />
                 <Tab.Screen name="Files"    component={DownloadsScreen} options={{tabBarLabel: 'Files'}} />
-                <Tab.Screen name="Settings" component={SettingsScreen} options={{tabBarLabel: 'Settings'}} />
+                <Tab.Screen name="Settings" component={SettingsNavigator} options={{tabBarLabel: 'Settings'}} />
               </Tab.Navigator>
             </NavigationContainer>
             <Toast />
