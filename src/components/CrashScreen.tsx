@@ -1,30 +1,23 @@
 import React from 'react';
-import {View, Text, ScrollView, TouchableOpacity, StyleSheet} from 'react-native';
+import {View, Text, ScrollView, TouchableOpacity, StyleSheet, Linking} from 'react-native';
 
 interface Props {
   message: string;
   stack?: string;
   extra?: string;
   onContinue?: () => void;
-  reportStatus?: 'sending' | 'sent' | 'skipped' | 'failed';
+  githubUrl?: string;
 }
 
-export default function CrashScreen({message, stack, extra, onContinue, reportStatus}: Props) {
-  const statusText = {
-    sending: '⏳ Sending report to GitHub…',
-    sent: '✅ Reported to GitHub automatically',
-    skipped: 'ℹ️ Not auto-reported (duplicate or recently sent)',
-    failed: '⚠️ Auto-report failed — screenshot this and send manually',
-  }[reportStatus || 'skipped'];
-
+export default function CrashScreen({message, stack, extra, onContinue, githubUrl}: Props) {
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={styles.title}>⚠️ App crashed (caught)</Text>
         <Text style={styles.subtitle}>
-          Screenshot this whole screen and send it over — this is the real error that was closing the app.
+          The error below didn't close the app, but it's worth getting fixed. Nothing is sent
+          automatically — review the details and submit to GitHub yourself if you'd like it tracked.
         </Text>
-        {reportStatus && <Text style={styles.status}>{statusText}</Text>}
 
         <Text style={styles.label}>Message</Text>
         <Text selectable style={styles.code}>
@@ -49,11 +42,19 @@ export default function CrashScreen({message, stack, extra, onContinue, reportSt
           </>
         ) : null}
       </ScrollView>
-      {onContinue && (
-        <TouchableOpacity style={styles.button} onPress={onContinue}>
-          <Text style={styles.buttonText}>Try to continue</Text>
-        </TouchableOpacity>
-      )}
+
+      <View style={styles.actions}>
+        {githubUrl && (
+          <TouchableOpacity style={styles.reportButton} onPress={() => Linking.openURL(githubUrl)}>
+            <Text style={styles.reportButtonText}>Review & Report on GitHub</Text>
+          </TouchableOpacity>
+        )}
+        {onContinue && (
+          <TouchableOpacity style={styles.button} onPress={onContinue}>
+            <Text style={styles.buttonText}>Try to continue</Text>
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   );
 }
@@ -63,9 +64,11 @@ const styles = StyleSheet.create({
   scroll: {padding: 16, paddingBottom: 24},
   title: {color: '#ef4444', fontSize: 18, fontWeight: '700', marginBottom: 8},
   subtitle: {color: '#aaa', fontSize: 12, marginBottom: 16, lineHeight: 18},
-  status: {color: '#9ca3af', fontSize: 11, marginBottom: 12, fontWeight: '600'},
   label: {color: '#7c3aed', fontSize: 11, fontWeight: '700', marginTop: 16, marginBottom: 4, textTransform: 'uppercase'},
   code: {color: '#e5e5e5', fontSize: 11, fontFamily: 'monospace'},
-  button: {backgroundColor: '#7c3aed', padding: 14, alignItems: 'center', margin: 16, borderRadius: 10},
+  actions: {paddingHorizontal: 16, paddingBottom: 16},
+  reportButton: {backgroundColor: '#1f2937', padding: 14, alignItems: 'center', borderRadius: 10, marginBottom: 8, borderWidth: 1, borderColor: '#7c3aed'},
+  reportButtonText: {color: '#a78bfa', fontWeight: '700'},
+  button: {backgroundColor: '#7c3aed', padding: 14, alignItems: 'center', borderRadius: 10},
   buttonText: {color: '#fff', fontWeight: '700'},
 });

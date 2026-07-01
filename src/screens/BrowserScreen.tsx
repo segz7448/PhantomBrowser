@@ -5,13 +5,9 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   StatusBar,
   BackHandler,
   Share,
-  Modal,
-  Animated,
-  PanResponder,
   NativeModules,
   NativeEventEmitter,
 } from 'react-native';
@@ -21,17 +17,20 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import EncryptedStorage from 'react-native-encrypted-storage';
 import {useProxy} from '../services/ProxyContext';
 import {useAppSettings, SEARCH_ENGINE_URLS} from '../services/AppSettings';
+import {useTheme, elevation} from '../services/Theme';
 import AdBlocker from '../services/AdBlocker';
 import Library from '../services/Library';
 import SitePermissions from '../services/SitePermissions';
+import haptics from '../services/haptics';
 import TabSwitcher, {TabSummary} from '../components/TabSwitcher';
 import LibraryModal from '../components/LibraryModal';
 import FindBar from '../components/FindBar';
+import ProgressBar from '../components/ProgressBar';
+import Favicon from '../components/Favicon';
+import BottomSheet from '../components/BottomSheet';
 import SiteInfoPanel from '../components/SiteInfoPanel';
 import AddressAutocomplete from '../components/AddressAutocomplete';
 import PasswordAutofillBanner from '../components/PasswordAutofillBanner';
-import {ChevronIcon, PlusIcon, DotsIcon, ReloadIcon, LockIcon} from '../components/Icon';
-import theme from '../theme';
 
 const {DownloadModule} = NativeModules;
 const downloadEmitter = DownloadModule ? new NativeEventEmitter(DownloadModule) : null;
@@ -62,6 +61,14 @@ interface PasswordEntry {
   password: string;
 }
 
+function getOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
 let tabCounter = 0;
 function newTab(url = 'https://duckduckgo.com'): TabState {
   tabCounter += 1;
@@ -75,14 +82,6 @@ function newTab(url = 'https://duckduckgo.com'): TabState {
   };
 }
 
-function getOrigin(url: string): string {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return url;
-  }
-}
-
 function getDomain(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, '');
@@ -94,6 +93,8 @@ function getDomain(url: string): string {
 export default function BrowserScreen() {
   const {isConnected, chain} = useProxy();
   const settings = useAppSettings();
+  const theme = useTheme();
+  const styles = useMemo(() => makeStyles(theme), [theme]);
 
   const [tabs, setTabs] = useState<TabState[]>(() => [newTab()]);
   const [activeId, setActiveId] = useState(() => tabs[0].id);
@@ -110,21 +111,30 @@ export default function BrowserScreen() {
   const [proxyWarningDismissed, setProxyWarningDismissed] = useState(false);
   const [autofillUser, setAutofillUser] = useState<{username: string; password: string} | null>(null);
   const [autofillDismissed, setAutofillDismissed] = useState(false);
-  const [scrollY, setScrollY] = useState(0);
-  const [refreshing, setRefreshing] = useState(false);
 
   const webviewRefs = useRef<Record<string, WebView | null>>({});
   const inputUrlRef = useRef(inputUrl);
   inputUrlRef.current = inputUrl;
-  const progressAnim = useRef(new Animated.Value(0)).current;
-  const pullAnim = useRef(new Animated.Value(0)).current;
-  const scrollYRef = useRef(0);
-  scrollYRef.current = scrollY;
 
   const activeTab = tabs.find(t => t.id === activeId) ?? tabs[0];
 
+  // Browsing is blocked only if requireProxy is on AND no proxy is connected.
   const browsingBlocked = settings.requireProxy && !isConnected;
   const showUnprotectedWarning = !settings.requireProxy && !isConnected && !proxyWarningDismissed;
+
+  useFocusEffect(
+    useCallback(() => {
+      const onBack = () => {
+        if (activeTab?.canGoBack) {
+          webviewRefs.current[activeTab.id]?.goBack();
+          return true;
+        }
+        return false;
+      };
+      BackHandler.addEventListener('hardwareBackPress', onBack);
+      return () => BackHandler.removeEventListener('hardwareBackPress', onBack);
+    }, [activeTab]),
+  );
 
   // ---------- Tab persistence ----------
   useEffect(() => {
@@ -150,21 +160,6 @@ export default function BrowserScreen() {
     if (!tabsLoaded) return; // don't overwrite saved tabs before the initial load resolves
     AsyncStorage.setItem(TABS_STORAGE_KEY, JSON.stringify({tabs, activeId})).catch(() => {});
   }, [tabs, activeId, tabsLoaded]);
-
-  // ---------- Back button ----------
-  useFocusEffect(
-    useCallback(() => {
-      const onBack = () => {
-        if (activeTab?.canGoBack) {
-          webviewRefs.current[activeTab.id]?.goBack();
-          return true;
-        }
-        return false;
-      };
-      BackHandler.addEventListener('hardwareBackPress', onBack);
-      return () => BackHandler.removeEventListener('hardwareBackPress', onBack);
-    }, [activeTab]),
-  );
 
   // ---------- Download completion listener ----------
   useEffect(() => {
@@ -218,11 +213,7 @@ export default function BrowserScreen() {
       const match = entries.find(
         e => domain.includes(e.site.toLowerCase()) || e.site.toLowerCase().includes(domain),
       );
-      if (match) {
-        setAutofillUser({username: match.username, password: match.password});
-      } else {
-        setAutofillUser(null);
-      }
+      setAutofillUser(match ? {username: match.username, password: match.password} : null);
     } catch {
       setAutofillUser(null);
     }
@@ -247,6 +238,7 @@ export default function BrowserScreen() {
   );
 
   const openNewTab = useCallback(() => {
+    haptics.light();
     const t = newTab();
     setTabs(prev => [...prev, t]);
     setActiveId(t.id);
@@ -275,12 +267,14 @@ export default function BrowserScreen() {
   );
 
   const selectTab = useCallback((id: string) => {
+    haptics.light();
     setActiveId(id);
     setTabSwitcherVisible(false);
   }, []);
 
   const toggleDesktopSite = useCallback(() => {
     if (!activeTab) return;
+    haptics.light();
     updateTab(activeTab.id, {desktopSite: !activeTab.desktopSite});
     setMenuVisible(false);
     setTimeout(() => webviewRefs.current[activeTab.id]?.reload(), 50);
@@ -289,6 +283,7 @@ export default function BrowserScreen() {
   const toggleBookmark = useCallback(async () => {
     if (!activeTab) return;
     const isNowBookmarked = await Library.toggleBookmark(activeTab.url, activeTab.title || activeTab.url);
+    haptics.success();
     setBookmarked(isNowBookmarked);
     setMenuVisible(false);
   }, [activeTab]);
@@ -298,7 +293,9 @@ export default function BrowserScreen() {
     setMenuVisible(false);
     try {
       await Share.share({message: activeTab.url});
-    } catch {}
+    } catch {
+      // user cancelled or share failed silently
+    }
   }, [activeTab]);
 
   const fillCredentials = useCallback(() => {
@@ -323,10 +320,10 @@ export default function BrowserScreen() {
       })();
       true;
     `);
+    haptics.success();
     setAutofillDismissed(true);
   }, [activeTab, autofillUser]);
 
-  // ---------- File downloads ----------
   const handleFileDownload = useCallback(async (downloadUrl: string) => {
     const filename = decodeURIComponent(downloadUrl.split('/').pop()?.split('?')[0] || `download_${Date.now()}`);
     const jsId = `dl_${Date.now()}`;
@@ -349,13 +346,13 @@ export default function BrowserScreen() {
     if (DownloadModule?.startDownload) {
       try {
         await DownloadModule.startDownload(downloadUrl, filename, jsId);
+        haptics.success();
       } catch {
         // Falls back to staying in the "downloading" state; user can still open the URL manually.
       }
     }
   }, []);
 
-  // ---------- Site permissions (camera/mic/location requests from pages) ----------
   const handlePermissionRequest = useCallback(
     async (event: any) => {
       const resources: string[] = event.nativeEvent.resources || [];
@@ -387,72 +384,35 @@ export default function BrowserScreen() {
     [tabs],
   );
 
-  const findScript = useCallback(
-    (text: string) => {
-      if (!activeTab) return;
-      const escaped = text.replace(/'/g, "\\'");
-      webviewRefs.current[activeTab.id]?.injectJavaScript(`
-        (function() {
-          try {
-            if (window.getSelection) window.getSelection().removeAllRanges();
-            if ('${escaped}'.length > 0 && window.find) {
-              window.find('${escaped}', false, false, true, false, true, false);
-            }
-          } catch (e) {}
-        })();
-        true;
-      `);
-    },
-    [activeTab],
-  );
+  const findScript = useCallback((text: string) => {
+    if (!activeTab) return;
+    const escaped = text.replace(/'/g, "\\'");
+    webviewRefs.current[activeTab.id]?.injectJavaScript(`
+      (function() {
+        try {
+          if (window.getSelection) window.getSelection().removeAllRanges();
+          if ('${escaped}'.length > 0 && window.find) {
+            window.find('${escaped}', false, false, true, false, true, false);
+          }
+        } catch (e) {}
+      })();
+      true;
+    `);
+  }, [activeTab]);
 
   const findNext = useCallback(() => {
-    activeTab &&
-      webviewRefs.current[activeTab.id]?.injectJavaScript(`
+    activeTab && webviewRefs.current[activeTab.id]?.injectJavaScript(`
       (function() { try { window.find && window.find('', false, false, true); } catch(e) {} })(); true;
     `);
   }, [activeTab]);
 
-  // ---------- Progress bar ----------
-  const handleLoadProgress = useCallback(
-    (e: any) => {
-      Animated.timing(progressAnim, {
-        toValue: e.nativeEvent.progress,
-        duration: 150,
-        useNativeDriver: false,
-      }).start();
-    },
-    [progressAnim],
-  );
-
-  // ---------- Pull to refresh (custom, since WebView isn't a ScrollView) ----------
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_evt, gesture) =>
-        scrollYRef.current <= 0 && gesture.dy > 12 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
-      onPanResponderMove: (_evt, gesture) => {
-        if (gesture.dy > 0) {
-          pullAnim.setValue(Math.min(gesture.dy, 90));
-        }
-      },
-      onPanResponderRelease: (_evt, gesture) => {
-        if (gesture.dy > 70 && activeTab) {
-          setRefreshing(true);
-          webviewRefs.current[activeTab.id]?.reload();
-          setTimeout(() => setRefreshing(false), 800);
-        }
-        Animated.spring(pullAnim, {toValue: 0, useNativeDriver: false}).start();
-      },
-    }),
-  ).current;
-
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={theme.colors.bg} />
+      <StatusBar barStyle={theme.statusBarStyle} backgroundColor={theme.background} />
 
+      {/* Status / unprotected warning */}
       <View style={styles.statusBar}>
-        <View style={[styles.dot, {backgroundColor: isConnected ? theme.colors.success : theme.colors.danger}]} />
+        <View style={[styles.dot, {backgroundColor: isConnected ? theme.success : theme.danger}]} />
         <Text style={styles.statusText} numberOfLines={1}>
           {isConnected
             ? `Protected · ${chain?.exitIP ?? '...'}`
@@ -461,19 +421,7 @@ export default function BrowserScreen() {
             : 'No proxy — browsing unprotected'}
         </Text>
       </View>
-
-      {/* Top loading progress bar */}
-      <View style={styles.progressTrack}>
-        <Animated.View
-          style={[
-            styles.progressFill,
-            {
-              width: progressAnim.interpolate({inputRange: [0, 1], outputRange: ['0%', '100%']}),
-              opacity: loading ? 1 : 0,
-            },
-          ]}
-        />
-      </View>
+      <ProgressBar loading={loading} />
 
       {showUnprotectedWarning && (
         <View style={styles.warningBanner}>
@@ -494,26 +442,25 @@ export default function BrowserScreen() {
         />
       )}
 
-      <View style={styles.urlBar}>
+      {/* URL bar */}
+      <View style={styles.urlBarOuter}>
         <TouchableOpacity
           onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goBack()}
-          disabled={!activeTab?.canGoBack}
-          style={styles.iconBtn}>
-          <ChevronIcon direction="left" color={activeTab?.canGoBack ? theme.colors.text : theme.colors.textFaint} />
+          disabled={!activeTab?.canGoBack}>
+          <Text style={[styles.navBtn, !activeTab?.canGoBack && styles.navBtnDisabled]}>‹</Text>
         </TouchableOpacity>
         <TouchableOpacity
           onPress={() => activeTab && webviewRefs.current[activeTab.id]?.goForward()}
-          disabled={!activeTab?.canGoForward}
-          style={styles.iconBtn}>
-          <ChevronIcon direction="right" color={activeTab?.canGoForward ? theme.colors.text : theme.colors.textFaint} />
+          disabled={!activeTab?.canGoForward}>
+          <Text style={[styles.navBtn, !activeTab?.canGoForward && styles.navBtnDisabled]}>›</Text>
         </TouchableOpacity>
 
-        <View style={{flex: 1}}>
-          {editingUrl ? (
+        {editingUrl ? (
+          <View style={styles.pillInput}>
             <TextInput
               style={styles.urlInput}
               placeholder={activeTab?.url}
-              placeholderTextColor={theme.colors.textFaint}
+              placeholderTextColor={theme.textMuted}
               value={inputUrl}
               onChangeText={setInputUrl}
               onSubmitEditing={() => navigate(inputUrlRef.current)}
@@ -524,29 +471,32 @@ export default function BrowserScreen() {
               keyboardType="url"
               autoFocus
             />
-          ) : (
-            <TouchableOpacity
-              style={styles.urlDisplay}
-              onPress={() => {
-                setInputUrl(activeTab?.url ?? '');
-                setEditingUrl(true);
-              }}>
+            <AddressAutocomplete query={inputUrl} onSelect={navigate} />
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={styles.urlDisplay}
+            activeOpacity={0.8}
+            onPress={() => {
+              setInputUrl(activeTab?.url ?? '');
+              setEditingUrl(true);
+            }}>
+            <Favicon url={activeTab?.url ?? ''} size={15} rounded={4} />
+            {isConnected && (
               <TouchableOpacity
                 hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}
-                onPress={() => setSiteInfoVisible(true)}
-                style={{marginRight: 6}}>
-                <LockIcon color={isConnected ? theme.colors.success : theme.colors.danger} />
+                onPress={() => setSiteInfoVisible(true)}>
+                <Text style={styles.lockIcon}>🔒</Text>
               </TouchableOpacity>
-              <Text style={styles.urlDisplayText} numberOfLines={1}>
-                {getDomain(activeTab?.url ?? '')}
-              </Text>
-            </TouchableOpacity>
-          )}
-          {editingUrl && <AddressAutocomplete query={inputUrl} onSelect={navigate} />}
-        </View>
+            )}
+            <Text style={styles.urlDisplayText} numberOfLines={1}>
+              {getDomain(activeTab?.url ?? '')}
+            </Text>
+          </TouchableOpacity>
+        )}
 
-        <TouchableOpacity onPress={() => activeTab && webviewRefs.current[activeTab.id]?.reload()} style={styles.iconBtn}>
-          <ReloadIcon color={theme.colors.text} />
+        <TouchableOpacity onPress={() => activeTab && webviewRefs.current[activeTab.id]?.reload()}>
+          <Text style={styles.navBtn}>↻</Text>
         </TouchableOpacity>
       </View>
 
@@ -562,13 +512,8 @@ export default function BrowserScreen() {
         />
       )}
 
-      <View style={styles.webviewArea} {...panResponder.panHandlers}>
-        <Animated.View style={[styles.pullIndicator, {height: pullAnim}]}>
-          {(refreshing || (pullAnim as any)._value > 10) && (
-            <ActivityIndicator size="small" color={theme.colors.accent} />
-          )}
-        </Animated.View>
-
+      {/* WebViews — all tabs mounted, only active one shown, so background tabs keep state */}
+      <View style={styles.webviewArea}>
         {browsingBlocked ? (
           <View style={styles.noProxy}>
             <Text style={styles.noProxyIcon}>🛡️</Text>
@@ -593,8 +538,6 @@ export default function BrowserScreen() {
                 injectedJavaScriptBeforeContentLoaded={settings.adBlock ? ADBLOCKER_JS : undefined}
                 onLoadStart={() => tab.id === activeId && setLoading(true)}
                 onLoadEnd={() => tab.id === activeId && setLoading(false)}
-                onLoadProgress={tab.id === activeId ? handleLoadProgress : undefined}
-                onScroll={tab.id === activeId ? e => setScrollY(e.nativeEvent.contentOffset.y) : undefined}
                 onNavigationStateChange={state => handleNavState(tab.id, state)}
                 onFileDownload={tab.id === activeId ? e => handleFileDownload(e.nativeEvent.downloadUrl) : undefined}
                 onPermissionRequest={tab.id === activeId ? handlePermissionRequest : undefined}
@@ -612,9 +555,10 @@ export default function BrowserScreen() {
         )}
       </View>
 
+      {/* Bottom toolbar */}
       <View style={styles.bottomBar}>
         <TouchableOpacity style={styles.bottomBtn} onPress={openNewTab}>
-          <PlusIcon color={theme.colors.text} />
+          <Text style={styles.bottomIcon}>＋</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.bottomBtn} onPress={() => setLibraryVisible(true)}>
           <Text style={styles.bottomIcon}>📚</Text>
@@ -625,7 +569,7 @@ export default function BrowserScreen() {
           </View>
         </TouchableOpacity>
         <TouchableOpacity style={styles.bottomBtn} onPress={() => setMenuVisible(true)}>
-          <DotsIcon color={theme.colors.text} />
+          <Text style={styles.bottomIcon}>⋯</Text>
         </TouchableOpacity>
       </View>
 
@@ -653,128 +597,124 @@ export default function BrowserScreen() {
         onDismiss={() => setSiteInfoVisible(false)}
       />
 
-      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
-        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
-          <View style={styles.menuSheet}>
-            <TouchableOpacity style={styles.menuItem} onPress={toggleBookmark}>
-              <Text style={styles.menuItemText}>{bookmarked ? '★ Remove Bookmark' : '☆ Add Bookmark'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={toggleDesktopSite}>
-              <Text style={styles.menuItemText}>
-                {activeTab?.desktopSite ? '📱 Switch to Mobile Site' : '🖥️ Request Desktop Site'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => {
-                setFindVisible(true);
-                setMenuVisible(false);
-              }}>
-              <Text style={styles.menuItemText}>🔍 Find in Page</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={shareUrl}>
-              <Text style={styles.menuItemText}>↗ Share Page</Text>
-            </TouchableOpacity>
-          </View>
+      <BottomSheet visible={menuVisible} onDismiss={() => setMenuVisible(false)}>
+        <TouchableOpacity style={styles.menuItem} onPress={toggleBookmark}>
+          <Text style={styles.menuItemText}>{bookmarked ? '★ Remove Bookmark' : '☆ Add Bookmark'}</Text>
         </TouchableOpacity>
-      </Modal>
+        <TouchableOpacity style={styles.menuItem} onPress={toggleDesktopSite}>
+          <Text style={styles.menuItemText}>
+            {activeTab?.desktopSite ? '📱 Switch to Mobile Site' : '🖥️ Request Desktop Site'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.menuItem}
+          onPress={() => {
+            setFindVisible(true);
+            setMenuVisible(false);
+          }}>
+          <Text style={styles.menuItemText}>🔍 Find in Page</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.menuItem} onPress={shareUrl}>
+          <Text style={styles.menuItemText}>↗ Share Page</Text>
+        </TouchableOpacity>
+      </BottomSheet>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: theme.colors.bg},
-  statusBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: theme.colors.surface,
-  },
-  dot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
-  statusText: {color: theme.colors.textDim, fontSize: 11, flex: 1},
-  progressTrack: {height: 2, backgroundColor: 'transparent'},
-  progressFill: {height: 2, backgroundColor: theme.colors.accent},
-  warningBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#3a1d00',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#5a2d00',
-  },
-  warningText: {color: theme.colors.warning, fontSize: 11, flex: 1},
-  warningDismiss: {color: theme.colors.warning, fontSize: 14, paddingHorizontal: 8, fontWeight: '700'},
-  urlBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: theme.colors.surfaceAlt,
-    paddingHorizontal: 6,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  iconBtn: {paddingHorizontal: 8, paddingVertical: 6},
-  urlInput: {
-    backgroundColor: theme.colors.surface,
-    color: theme.colors.text,
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    fontSize: 13,
-    marginHorizontal: 4,
-    borderWidth: 1,
-    borderColor: theme.colors.accentDim,
-  },
-  urlDisplay: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginHorizontal: 4,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  urlDisplayText: {color: theme.colors.text, fontSize: 13, flex: 1},
-  webviewArea: {flex: 1},
-  pullIndicator: {alignItems: 'center', justifyContent: 'center', overflow: 'hidden'},
-  webview: {flex: 1},
-  noProxy: {flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32},
-  noProxyIcon: {fontSize: 56, marginBottom: 16},
-  noProxyTitle: {color: theme.colors.text, fontSize: 20, fontWeight: '700', marginBottom: 12},
-  noProxyText: {color: theme.colors.textDim, fontSize: 14, textAlign: 'center', lineHeight: 22},
-  bottomBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    backgroundColor: theme.colors.surface,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-  },
-  bottomBtn: {paddingHorizontal: 18, paddingVertical: 4, alignItems: 'center', justifyContent: 'center'},
-  bottomIcon: {color: theme.colors.text, fontSize: 18},
-  tabCountBadge: {
-    width: 26,
-    height: 22,
-    borderRadius: 7,
-    borderWidth: 1.5,
-    borderColor: theme.colors.text,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabCountText: {color: theme.colors.text, fontSize: 11, fontWeight: '700'},
-  menuOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end'},
-  menuSheet: {
-    backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: theme.radius.lg,
-    borderTopRightRadius: theme.radius.lg,
-    paddingVertical: 8,
-    paddingBottom: 24,
-  },
-  menuItem: {paddingVertical: 14, paddingHorizontal: 20},
-  menuItemText: {color: theme.colors.text, fontSize: 15},
-});
+const makeStyles = (theme: ReturnType<typeof useTheme>) =>
+  StyleSheet.create({
+    container: {flex: 1, backgroundColor: theme.background},
+    statusBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      backgroundColor: theme.surface,
+    },
+    dot: {width: 8, height: 8, borderRadius: 4, marginRight: 6},
+    statusText: {color: theme.textSecondary, fontSize: 11, flex: 1},
+    warningBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.warningSoft,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+    },
+    warningText: {color: theme.warning, fontSize: 11, flex: 1},
+    warningDismiss: {color: theme.warning, fontSize: 14, paddingHorizontal: 8, fontWeight: '700'},
+    urlBarOuter: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.surfaceElevated,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+    },
+    pillInput: {flex: 1, marginHorizontal: 6},
+    urlInput: {
+      backgroundColor: theme.surface,
+      color: theme.text,
+      borderRadius: 24,
+      paddingHorizontal: 16,
+      paddingVertical: 9,
+      fontSize: 13,
+      borderWidth: 1.5,
+      borderColor: theme.primary,
+    },
+    urlDisplay: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.surface,
+      borderRadius: 24,
+      paddingHorizontal: 14,
+      paddingVertical: 9,
+      marginHorizontal: 6,
+      gap: 6,
+      borderWidth: 1,
+      borderColor: theme.border,
+      ...elevation(theme, 1),
+    },
+    lockIcon: {fontSize: 11},
+    urlDisplayText: {color: theme.textSecondary, fontSize: 13, flex: 1},
+    navBtn: {color: theme.textSecondary, fontSize: 22, paddingHorizontal: 6},
+    navBtnDisabled: {color: theme.textMuted, opacity: 0.4},
+    webviewArea: {flex: 1},
+    webview: {flex: 1},
+    noProxy: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 32,
+    },
+    noProxyIcon: {fontSize: 56, marginBottom: 16},
+    noProxyTitle: {color: theme.text, fontSize: 20, fontWeight: '700', marginBottom: 12},
+    noProxyText: {color: theme.textMuted, fontSize: 14, textAlign: 'center', lineHeight: 22},
+    bottomBar: {
+      flexDirection: 'row',
+      justifyContent: 'space-around',
+      alignItems: 'center',
+      backgroundColor: theme.surface,
+      paddingVertical: 10,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+    },
+    bottomBtn: {paddingHorizontal: 18, paddingVertical: 4, alignItems: 'center', justifyContent: 'center'},
+    bottomIcon: {color: theme.textSecondary, fontSize: 20},
+    tabCountBadge: {
+      width: 26,
+      height: 22,
+      borderRadius: 6,
+      borderWidth: 1.5,
+      borderColor: theme.textSecondary,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    tabCountText: {color: theme.textSecondary, fontSize: 11, fontWeight: '700'},
+    menuItem: {paddingVertical: 14, paddingHorizontal: 20},
+    menuItemText: {color: theme.text, fontSize: 15},
+  });

@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {View, Text, TouchableOpacity, FlatList, StyleSheet} from 'react-native';
 import Library, {LibraryEntry} from '../services/Library';
-import theme from '../theme';
+import {useTheme, elevation} from '../services/Theme';
 
 interface Props {
   query: string;
@@ -9,6 +9,8 @@ interface Props {
 }
 
 export default function AddressAutocomplete({query, onSelect}: Props) {
+  const theme = useTheme();
+  const styles = makeStyles(theme);
   const [matches, setMatches] = useState<LibraryEntry[]>([]);
 
   useEffect(() => {
@@ -53,21 +55,22 @@ export default function AddressAutocomplete({query, onSelect}: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    position: 'absolute',
-    top: '100%',
-    left: 8,
-    right: 8,
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    maxHeight: 220,
-    zIndex: 50,
-    elevation: 8,
-  },
-  row: {paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.colors.border},
-  title: {color: theme.colors.text, fontSize: 13, fontWeight: '600'},
-  url: {color: theme.colors.textFaint, fontSize: 11, marginTop: 2},
-});
+const makeStyles = (theme: ReturnType<typeof useTheme>) =>
+  StyleSheet.create({
+    container: {
+      position: 'absolute',
+      top: '100%',
+      left: 0,
+      right: 0,
+      backgroundColor: theme.card,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.cardBorder,
+      maxHeight: 220,
+      zIndex: 50,
+      ...elevation(theme, 3),
+    },
+    row: {paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.divider},
+    title: {color: theme.text, fontSize: 13, fontWeight: '600'},
+    url: {color: theme.textMuted, fontSize: 11, marginTop: 2},
+  });

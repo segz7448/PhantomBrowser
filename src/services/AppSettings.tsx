@@ -11,6 +11,7 @@ export interface AppSettingsState {
   // When false, the user can browse unprotected (with a warning banner shown).
   requireProxy: boolean;
   desktopSiteDefault: boolean;
+  theme: 'dark' | 'light';
   searchEngine: 'duckduckgo' | 'google' | 'brave' | 'startpage';
 }
 
@@ -29,6 +30,7 @@ const DEFAULTS: AppSettingsState = {
   quicDisabled: true,
   requireProxy: true,
   desktopSiteDefault: false,
+  theme: 'dark',
   searchEngine: 'duckduckgo',
 };
 

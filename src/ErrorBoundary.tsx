@@ -1,11 +1,10 @@
 import React from 'react';
 import CrashScreen from './components/CrashScreen';
-import {reportCrash, ReportStatus} from './services/crashReporter';
+import {buildGithubIssueUrl} from './services/crashReporter';
 
 interface State {
   error: Error | null;
   info: string;
-  reportStatus?: ReportStatus | 'sending';
 }
 
 // Catches errors thrown during React render (not async/event-handler errors —
@@ -18,28 +17,20 @@ export default class ErrorBoundary extends React.Component<{children: React.Reac
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    this.setState({info: info.componentStack || '', reportStatus: 'sending'});
-    reportCrash({
-      message: error.message,
-      stack: error.stack,
-      componentStack: info.componentStack || undefined,
-      isFatal: true,
-    }).then(status => this.setState({reportStatus: status}));
+    this.setState({info: info.componentStack || ''});
   }
 
-  reset = () => this.setState({error: null, info: '', reportStatus: undefined});
+  reset = () => this.setState({error: null, info: ''});
 
   render() {
-    const {error, info, reportStatus} = this.state;
+    const {error, info} = this.state;
     if (!error) return this.props.children;
-    return (
-      <CrashScreen
-        message={error.message}
-        stack={error.stack}
-        extra={info}
-        onContinue={this.reset}
-        reportStatus={reportStatus}
-      />
-    );
+    const githubUrl = buildGithubIssueUrl({
+      message: error.message,
+      stack: error.stack,
+      componentStack: info || undefined,
+      isFatal: true,
+    });
+    return <CrashScreen message={error.message} stack={error.stack} extra={info} onContinue={this.reset} githubUrl={githubUrl} />;
   }
 }
