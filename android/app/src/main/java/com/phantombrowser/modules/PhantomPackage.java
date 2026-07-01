@@ -14,7 +14,12 @@ public class PhantomPackage implements ReactPackage {
 
     @Override
     public List<NativeModule> createNativeModules(ReactApplicationContext ctx) {
-        return Arrays.asList(new ProxyBridgeModule(ctx), new DownloadModule(ctx), new CrashReportModule(ctx));
+        return Arrays.asList(
+            new ProxyBridgeModule(ctx),
+            new DownloadModule(ctx),
+            new CrashReportModule(ctx),
+            new CustomTabsModule(ctx)
+        );
     }
 
     @Override

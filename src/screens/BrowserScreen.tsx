@@ -25,6 +25,7 @@ import {useAppSettings, SEARCH_ENGINE_URLS} from '../services/AppSettings';
 import AdBlocker from '../services/AdBlocker';
 import Library from '../services/Library';
 import SitePermissions from '../services/SitePermissions';
+import {openInChrome, getChromeEngineInfo, prefetchInChrome, ChromeEngineInfo} from '../services/ChromeShell';
 import TabSwitcher, {TabSummary} from '../components/TabSwitcher';
 import LibraryModal from '../components/LibraryModal';
 import FindBar from '../components/FindBar';
@@ -71,7 +72,8 @@ interface TabState {
   canGoBack: boolean;
   canGoForward: boolean;
   desktopSite: boolean;
-  zoom: number; // 20–200, default 100
+  zoom: number;
+  mode: 'webview' | 'chrome'; // webview = proxied; chrome = real Chromium engine
 }
 
 interface PasswordEntry {
@@ -92,6 +94,7 @@ function newTab(url = 'https://duckduckgo.com'): TabState {
     canGoForward: false,
     desktopSite: false,
     zoom: 100,
+    mode: 'webview',
   };
 }
 
@@ -245,9 +248,15 @@ export default function BrowserScreen() {
   const [autofillDismissed, setAutofillDismissed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [urlBarFocused, setUrlBarFocused] = useState(false);
+  const [chromeEngine, setChromeEngine] = useState<ChromeEngineInfo>({available: false, package: '', name: 'None'});
   // Translate modal
   const [translateVisible, setTranslateVisible] = useState(false);
   const [translateLang, setTranslateLang] = useState('es');
+
+  // Detect which Chromium engine is available on this device on mount
+  useEffect(() => {
+    getChromeEngineInfo().then(setChromeEngine);
+  }, []);
 
   const webviewRefs = useRef<Record<string, WebView | null>>({});
   const inputRef = useRef<TextInput>(null);
@@ -314,18 +323,23 @@ export default function BrowserScreen() {
     setTabs(prev => prev.map(t => t.id === id ? {...t, ...patch} : t));
   }, []);
 
-  const navigate = useCallback((target: string) => {
+  const navigate = useCallback(async (target: string) => {
     let nav = target.trim();
     if (!nav) return;
     if (!nav.startsWith('http://') && !nav.startsWith('https://')) {
       nav = nav.includes('.') && !nav.includes(' ') ? 'https://' + nav
         : SEARCH_ENGINE_URLS[settings.searchEngine ?? 'duckduckgo'] + encodeURIComponent(nav);
     }
-    updateTab(activeId, {url: nav});
     setInputUrl('');
     setEditingUrl(false);
     setAutofillDismissed(false);
-  }, [activeId, updateTab, settings.searchEngine]);
+    // If active tab is in Chrome mode, open in Chrome shell
+    if (activeTab?.mode === 'chrome') {
+      await openInChrome(nav);
+      return;
+    }
+    updateTab(activeId, {url: nav});
+  }, [activeId, activeTab, updateTab, settings.searchEngine]);
 
   const checkAutofill = useCallback(async (url: string) => {
     try {
@@ -464,6 +478,23 @@ export default function BrowserScreen() {
     setTranslateVisible(false);
   }, [activeTab, activeId, updateTab, translateLang]);
 
+  const toggleChromeMode = useCallback(async () => {
+    if (!activeTab) return;
+    const next = activeTab.mode === 'chrome' ? 'webview' : 'chrome';
+    updateTab(activeTab.id, {mode: next});
+    setMenuVisible(false);
+    // If switching to Chrome mode, immediately open the current URL in Chrome
+    if (next === 'chrome') {
+      await openInChrome(activeTab.url);
+    }
+  }, [activeTab, updateTab]);
+
+  // When a tab is in Chrome mode and navigates, open in Chrome instead
+  const navigateChrome = useCallback(async (url: string) => {
+    if (!activeTab || activeTab.mode !== 'chrome') return;
+    await openInChrome(url);
+  }, [activeTab]);
+
   const readingMode = useCallback(() => {
     if (!activeTab) return;
     setMenuVisible(false);
@@ -567,7 +598,12 @@ export default function BrowserScreen() {
               ref={inputRef}
               style={S.addressInput}
               value={inputUrl}
-              onChangeText={setInputUrl}
+              onChangeText={v => {
+                setInputUrl(v);
+                if (v.startsWith('http') && activeTab?.mode === 'chrome') {
+                  prefetchInChrome(v);
+                }
+              }}
               onSubmitEditing={() => navigate(inputUrlRef.current)}
               onBlur={() => setTimeout(() => setEditingUrl(false), 120)}
               returnKeyType="go"
@@ -595,6 +631,11 @@ export default function BrowserScreen() {
               <LockIcon secure={secure} />
             </TouchableOpacity>
             <Text style={S.addressText} numberOfLines={1}>{domain || 'Search or type URL'}</Text>
+            {activeTab?.mode === 'chrome' && (
+              <View style={S.chromeBadge}>
+                <Text style={S.chromeBadgeText}>Chrome</Text>
+              </View>
+            )}
             {loading && (
               <View style={S.loadingDot}>
                 <Animated.View style={[S.loadingDotInner, {opacity: progressAnim.interpolate({inputRange:[0,0.5,1],outputRange:[0.3,1,0.3]})}]} />
@@ -663,6 +704,29 @@ export default function BrowserScreen() {
         ) : (
           tabs.map(tab => (
             <View key={tab.id} style={[StyleSheet.absoluteFill, {display: tab.id === activeId ? 'flex' : 'none'}]}>
+              {tab.mode === 'chrome' ? (
+                // Chrome mode: page is open in actual Chrome. Show a card so
+                // the user knows what happened and can switch back.
+                <View style={S.chromeCard}>
+                  <Text style={S.chromeCardIcon}>🌐</Text>
+                  <Text style={S.chromeCardTitle}>Opened in {chromeEngine.name}</Text>
+                  <Text style={S.chromeCardBody}>
+                    This tab is using the real Chromium engine. Sites like Facebook and Instagram
+                    see a genuine Chrome fingerprint.{'\n\n'}
+                    Note: traffic is NOT routed through your proxy in Chrome mode.
+                  </Text>
+                  <TouchableOpacity
+                    style={S.chromeCardBtn}
+                    onPress={() => openInChrome(tab.url)}>
+                    <Text style={S.chromeCardBtnText}>Re-open in Chrome</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={S.chromeCardBtnSecondary}
+                    onPress={() => updateTab(tab.id, {mode: 'webview'})}>
+                    <Text style={S.chromeCardBtnSecondaryText}>Switch back to Proxied WebView</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
               <WebView
                 ref={ref => { webviewRefs.current[tab.id] = ref; }}
                 source={{uri: tab.url}}
@@ -679,6 +743,7 @@ export default function BrowserScreen() {
                 onShouldStartLoadWithRequest={request => !settings.adBlock || !AdBlocker.shouldBlock(request.url)}
                 injectedJavaScript={tab.zoom !== 100 ? `document.body.style.zoom='${tab.zoom/100}';true;` : undefined}
               />
+              )}
             </View>
           ))
         )}
@@ -759,6 +824,16 @@ export default function BrowserScreen() {
               icon={activeTab?.desktopSite ? '📱' : '🖥️'}
               label={activeTab?.desktopSite ? 'Switch to Mobile Site' : 'Request Desktop Site'}
               onPress={toggleDesktopSite}
+            />
+            <MenuItem
+              icon="🌐"
+              label={activeTab?.mode === 'chrome' ? 'Switch to Proxied WebView' : 'Open in Chrome Shell'}
+              sub={activeTab?.mode === 'chrome'
+                ? 'Currently using real Chrome engine (no proxy)'
+                : chromeEngine.available
+                  ? `Uses ${chromeEngine.name} — real fingerprint, no proxy`
+                  : 'No Chromium browser found on device'}
+              onPress={chromeEngine.available ? toggleChromeMode : () => setMenuVisible(false)}
             />
             <MenuItem icon="🔍" label="Find in Page" onPress={() => { setFindVisible(true); setMenuVisible(false); }} />
             <MenuItem
@@ -931,4 +1006,38 @@ const S = StyleSheet.create({
   langChipText: {color: '#9ca3af', fontSize: 13, fontWeight: '600'},
   translateBtn: {marginTop: 20, backgroundColor: '#7c3aed', borderRadius: 12, paddingVertical: 14, alignItems: 'center'},
   translateBtnText: {color: '#fff', fontWeight: '700', fontSize: 15},
+
+  // Chrome mode badge in address bar
+  chromeBadge: {
+    backgroundColor: '#1a73e8',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: 6,
+  },
+  chromeBadgeText: {color: '#fff', fontSize: 10, fontWeight: '700'},
+
+  // Chrome mode card (shown instead of WebView when tab is in Chrome mode)
+  chromeCard: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+    backgroundColor: '#f8f9fa',
+  },
+  chromeCardIcon: {fontSize: 56, marginBottom: 16},
+  chromeCardTitle: {color: '#202124', fontSize: 18, fontWeight: '700', marginBottom: 12, textAlign: 'center'},
+  chromeCardBody: {color: '#5f6368', fontSize: 13, textAlign: 'center', lineHeight: 20, marginBottom: 24},
+  chromeCardBtn: {
+    backgroundColor: '#1a73e8',
+    borderRadius: 10,
+    paddingVertical: 13,
+    paddingHorizontal: 28,
+    marginBottom: 10,
+    width: '100%',
+    alignItems: 'center',
+  },
+  chromeCardBtnText: {color: '#fff', fontWeight: '700', fontSize: 14},
+  chromeCardBtnSecondary: {paddingVertical: 10},
+  chromeCardBtnSecondaryText: {color: '#1a73e8', fontSize: 13, fontWeight: '600'},
 });
