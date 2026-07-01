@@ -56,6 +56,7 @@ dependencies {
     implementation "androidx.appcompat:appcompat:1.6.1"
     implementation "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0"
     implementation "androidx.browser:browser:1.7.0"
+    implementation "androidx.webkit:webkit:1.10.0"
 }
 
 apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle")

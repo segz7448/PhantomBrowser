@@ -2,6 +2,10 @@ package com.phantombrowser.proxy;
 
 import android.util.Log;
 
+import androidx.webkit.ProxyConfig;
+import androidx.webkit.ProxyController;
+import androidx.webkit.WebViewFeature;
+
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
@@ -144,104 +148,70 @@ public class ProxyBridgeModule extends ReactContextBaseJavaModule {
     // ─────────────────────────────────────────────────────────────────────────
 
     // ─────────────────────────────────────────────────────────────────────────
-    // WebView proxy routing
+    // WebView proxy routing via ProxyController (androidx.webkit)
+    //
+    // ProxyController.getInstance().setProxyOverride() is the ONLY officially
+    // supported API for routing Android WebView traffic through a proxy.
+    // All previous approaches (System.setProperty, PROXY_CHANGE broadcast,
+    // ProxySelector) are unreliable for WebView — they work for Java's HTTP
+    // stack but not for the Chromium network stack that WebView uses internally.
+    //
+    // ProxyController requires:
+    //   - androidx.webkit:webkit:1.1.0+ (we use 1.10.0)
+    //   - WebViewFeature.PROXY_OVERRIDE supported (true on all API 24+ devices
+    //     with a modern WebView, which covers all real-world devices)
+    //   - Must be called on the main thread
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Routes Android's WebView through a local HTTP proxy.
-     *
-     * Three complementary mechanisms are needed because different Android
-     * versions and WebView builds listen to different sources:
-     *
-     * 1. System properties  — picked up by older WebView / some OEM builds.
-     * 2. ProxySelector      — picked up by Java's HttpURLConnection layer.
-     * 3. PROXY_CHANGE broadcast — the primary signal for modern Android WebView
-     *    to reload its network configuration. Without this, even correct proxy
-     *    settings are often ignored until the next WebView process restart.
-     */
     private void setAndroidWebViewProxy(String host, int port) {
-        // ── 1. System properties (legacy / OEM compat) ──
-        System.setProperty("http.proxyHost",  host);
-        System.setProperty("http.proxyPort",  String.valueOf(port));
-        System.setProperty("https.proxyHost", host);
-        System.setProperty("https.proxyPort", String.valueOf(port));
-
-        // ── 2. Java ProxySelector ──
-        final java.net.Proxy javaProxy = new java.net.Proxy(
-            java.net.Proxy.Type.HTTP,
-            new java.net.InetSocketAddress(host, port)
-        );
-        java.net.ProxySelector.setDefault(new java.net.ProxySelector() {
-            @Override
-            public java.util.List<java.net.Proxy> select(java.net.URI uri) {
-                return java.util.Collections.singletonList(javaProxy);
-            }
-            @Override
-            public void connectFailed(java.net.URI uri, java.net.SocketAddress sa, java.io.IOException e) {
-                Log.w(TAG, "ProxySelector connectFailed: " + e.getMessage());
-            }
-        });
-
-        // ── 3. PROXY_CHANGE broadcast ──
-        // This is what modern Android WebView actually listens to. The Intent
-        // must be sent on the main thread and must include the proxy info in
-        // the extras that WebView's internal network stack reads.
-        android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
-        mainHandler.post(() -> {
+        android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+        main.post(() -> {
             try {
-                android.content.Context ctx = getReactApplicationContext();
+                if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+                    Log.w(TAG, "ProxyController not supported on this WebView version — falling back to system properties");
+                    // Fallback for very old WebView builds (extremely rare on API 24+)
+                    System.setProperty("http.proxyHost", host);
+                    System.setProperty("http.proxyPort", String.valueOf(port));
+                    System.setProperty("https.proxyHost", host);
+                    System.setProperty("https.proxyPort", String.valueOf(port));
+                    return;
+                }
 
-                // Build the proxy info via reflection (android.net.ProxyInfo
-                // is a hidden API but stable since API 21).
-                Class<?> proxyInfoClass = Class.forName("android.net.ProxyInfo");
-                java.lang.reflect.Method buildDirectProxy = proxyInfoClass
-                    .getMethod("buildDirectProxy", String.class, Integer.TYPE);
-                Object proxyInfo = buildDirectProxy.invoke(null, host, port);
+                ProxyConfig proxyConfig = new ProxyConfig.Builder()
+                    .addProxyRule(host + ":" + port)
+                    // Bypass localhost so the app's own API calls aren't proxied
+                    .addDirect("localhost")
+                    .addDirect("127.0.0.1")
+                    .build();
 
-                android.content.Intent intent = new android.content.Intent(
-                    android.net.Proxy.PROXY_CHANGE_ACTION);
-                intent.putExtra("proxy", (android.os.Parcelable) proxyInfo);
-                ctx.sendBroadcast(intent);
-                Log.i(TAG, "Proxy set → " + host + ":" + port);
+                ProxyController.getInstance().setProxyOverride(
+                    proxyConfig,
+                    Runnable::run,  // Executor: run callback inline (sync confirm)
+                    () -> Log.i(TAG, "ProxyController: proxy set → " + host + ":" + port)
+                );
             } catch (Exception e) {
-                // The broadcast failed (e.g. reflection blocked on some
-                // hardened builds). Systems properties + ProxySelector above
-                // will still provide partial coverage.
-                Log.w(TAG, "PROXY_CHANGE broadcast failed: " + e.getMessage());
+                Log.e(TAG, "ProxyController setProxyOverride failed: " + e.getMessage());
             }
         });
     }
 
     private void clearAndroidWebViewProxy() {
-        System.clearProperty("http.proxyHost");
-        System.clearProperty("http.proxyPort");
-        System.clearProperty("https.proxyHost");
-        System.clearProperty("https.proxyPort");
-
-        java.net.ProxySelector.setDefault(new java.net.ProxySelector() {
-            @Override
-            public java.util.List<java.net.Proxy> select(java.net.URI uri) {
-                return java.util.Collections.singletonList(java.net.Proxy.NO_PROXY);
-            }
-            @Override
-            public void connectFailed(java.net.URI uri, java.net.SocketAddress sa, java.io.IOException e) {}
-        });
-
-        android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
-        mainHandler.post(() -> {
+        android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+        main.post(() -> {
             try {
-                android.content.Context ctx = getReactApplicationContext();
-                Class<?> proxyInfoClass = Class.forName("android.net.ProxyInfo");
-                java.lang.reflect.Method buildDirectProxy = proxyInfoClass
-                    .getMethod("buildDirectProxy", String.class, Integer.TYPE);
-                Object proxyInfo = buildDirectProxy.invoke(null, "", 0);
-                android.content.Intent intent = new android.content.Intent(
-                    android.net.Proxy.PROXY_CHANGE_ACTION);
-                intent.putExtra("proxy", (android.os.Parcelable) proxyInfo);
-                ctx.sendBroadcast(intent);
-                Log.i(TAG, "Proxy cleared");
+                if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+                    System.clearProperty("http.proxyHost");
+                    System.clearProperty("http.proxyPort");
+                    System.clearProperty("https.proxyHost");
+                    System.clearProperty("https.proxyPort");
+                    return;
+                }
+                ProxyController.getInstance().clearProxyOverride(
+                    Runnable::run,
+                    () -> Log.i(TAG, "ProxyController: proxy cleared")
+                );
             } catch (Exception e) {
-                Log.w(TAG, "PROXY_CHANGE clear broadcast failed: " + e.getMessage());
+                Log.e(TAG, "ProxyController clearProxyOverride failed: " + e.getMessage());
             }
         });
     }
